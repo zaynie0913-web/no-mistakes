@@ -14,6 +14,19 @@ Safest local verification sequence after non-trivial changes:
 - `make e2e` when touching agent integrations, the e2e harness, or recorded fixtures
 - `go build -o ./bin/no-mistakes ./cmd/no-mistakes`
 
+**Core Philosophy — 编程八荣八耻**
+
+These are the standing values behind every rule below; when a specific rule and one of these conflict, say so instead of silently picking one.
+
+1. 以暗猜接口为耻，以认真查阅为荣 — Never guess an API; read the source, the docs, or the type.
+2. 以模糊执行为耻，以寻求确认为荣 — Never act on a vague instruction; get it pinned down first.
+3. 以盲想业务为耻，以人类确认为荣 — Never invent business rules; confirm them with a human.
+4. 以创造接口为耻，以复用现有为荣 — Never add a new interface where an existing one fits.
+5. 以跳过验证为耻，以主动测试为荣 — Never skip verification; test proactively (this repo: TDD for bug fixes and features).
+6. 以破坏架构为耻，以遵循规范为荣 — Never break the architecture; follow the conventions already in place.
+7. 以假装理解为耻，以诚实无知为荣 — Never fake understanding; say plainly what you do not know.
+8. 以盲目修改为耻，以谨慎重构为荣 — Never change code blindly; refactor deliberately and in scope.
+
 **Fork Routing**
 
 - `repos.upstream_url` is the parent repository used for PR base routing; `repos.fork_url` is an optional GitHub fork push target.
