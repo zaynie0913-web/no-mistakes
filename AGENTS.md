@@ -27,6 +27,19 @@ These are the standing values behind every rule below; when a specific rule and 
 7. 以假装理解为耻，以诚实无知为荣 — Never fake understanding; say plainly what you do not know.
 8. 以盲目修改为耻，以谨慎重构为荣 — Never change code blindly; refactor deliberately and in scope.
 
+**Scope Limits — 反过度防御 (HERO)**
+
+Adapted from [HERO-Anti-OverDefense](https://github.com/wanshuiyin/HERO-Anti-OverDefense). These bound what you **propose and build**, never what you look for: report anything that is actually wrong here, including a rare-looking case this project really produces, then keep the fix in scope.
+
+1. No hash, checksum, or fingerprint unless it replaces a materially more expensive operation AND its result changes what happens next. "Something reads it" is too weak a test.
+2. No defensive scaffolding — feature flags, migration frameworks, compat layers, wrappers — for cases that do not occur here. Guards whose justification is the previous guard, not the requirement.
+3. No corner-case obsession: exotic encodings, RTL text, symlink and millisecond races are out of scope unless reachable through this project's supported use — its documented inputs, its CLI and IPC surface, its real data, and the daemon's own concurrency. Reachable is enough; constructible in principle is not.
+4. Where judgement is needed, judge. Do not replace it with a scoring table, a checklist, or a re-verification loop over something already settled.
+5. Before running an *extra* check, name the specific failure it would detect and what you would do differently if it occurred. This never trims the verification sequence at the top of this file or the TDD rule in Core Philosophy #5 — those were asked for.
+6. Say plainly when something is correct. Do not manufacture findings.
+
+The upstream block's default — "assume a cooperating operator on their own machine" — is **false here**, and rules 1-5 must never be cited to weaken: the repo-config trust boundary (a pushed branch is untrusted input), rebase-base and force-push safety (losing a contributor's commits is the failure this tool exists to prevent), gate git handling under `safe.bareRepository`, the daemon singleton lock, subprocess-group reaping, the destructive-lifecycle guard, the macOS signing verify gate, and the adversarial stripping/redaction on intent and review content. Each has a section below stating why it is reachable in normal operation; that stated scope wins, per HERO's own rule 6.
+
 **Fork Routing**
 
 - `repos.upstream_url` is the parent repository used for PR base routing; `repos.fork_url` is an optional GitHub fork push target.
