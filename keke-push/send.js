@@ -17,9 +17,24 @@ function getDaysUntilExam() {
   return Math.ceil((examDate - today) / (1000 * 60 * 60 * 24));
 }
 
-const arr = messages[category];
+function isWeekend() {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const day = now.getDay();
+  return day === 0 || day === 6;
+}
+
+function pickCategory(category) {
+  if (category === 'study_reminder') return 'study_reminder';
+  if (isWeekend() && messages['weekend_' + category]) {
+    return 'weekend_' + category;
+  }
+  return category;
+}
+
+const finalCategory = pickCategory(category);
+const arr = messages[finalCategory];
 if (!arr || arr.length === 0) {
-  console.error(`Unknown category: ${category}`);
+  console.error(`Unknown category: ${finalCategory}`);
   process.exit(1);
 }
 
@@ -40,7 +55,7 @@ fetch('https://ntfy.sh', {
   }),
 }).then(res => {
   if (res.ok) {
-    console.log(`Sent [${category}]: ${msg.substring(0, 40)}...`);
+    console.log(`Sent [${finalCategory}]: ${msg.substring(0, 40)}...`);
   } else {
     res.text().then(t => console.error(`Failed: ${res.status} ${t}`));
     process.exit(1);
