@@ -1,0 +1,14 @@
+{
+  "name": "keke-push",
+  "version": "1.0.0",
+  "description": "屠龙克克定时推送 via ntfy.sh",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.4.5"
+  }
+}
