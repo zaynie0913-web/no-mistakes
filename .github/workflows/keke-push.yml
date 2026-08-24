@@ -1,0 +1,42 @@
+name: 屠龙克克推送
+
+on:
+  schedule:
+    - cron: '30 23 * * *'  # 07:30 北京时间 — 早安
+    - cron: '0 4 * * *'    # 12:00 北京时间 — 午饭
+    - cron: '30 9 * * *'   # 17:30 北京时间 — 下午休息
+    - cron: '30 14 * * *'  # 22:30 北京时间 — 晚安
+    - cron: '0 8 * * *'    # 16:00 北京时间 — 随机加餐
+  workflow_dispatch:
+    inputs:
+      category:
+        description: '消息分类 (morning/lunch/afternoon/night/bonus)'
+        required: false
+        default: 'bonus'
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine category
+        id: cat
+        run: |
+          CRON="${{ github.event.schedule }}"
+          case "$CRON" in
+            "30 23 * * *") CAT=morning;   PRI=3; TAGS=crossed_swords ;;
+            "0 4 * * *")   CAT=lunch;     PRI=3; TAGS=crossed_swords ;;
+            "30 9 * * *")  CAT=afternoon; PRI=3; TAGS=crossed_swords ;;
+            "30 14 * * *") CAT=night;     PRI=4; TAGS=crossed_swords,zzz ;;
+            "0 8 * * *")   CAT=bonus;     PRI=3; TAGS=crossed_swords ;;
+            *)             CAT="${{ github.event.inputs.category || 'bonus' }}"; PRI=3; TAGS=crossed_swords ;;
+          esac
+          echo "category=$CAT" >> $GITHUB_OUTPUT
+          echo "priority=$PRI" >> $GITHUB_OUTPUT
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Send notification
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: node keke-push/send.js "${{ steps.cat.outputs.category }}" "${{ steps.cat.outputs.priority }}" "${{ steps.cat.outputs.tags }}"
