@@ -2,15 +2,22 @@ name: 屠龙克克推送
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # 07:30 北京时间 — 早安
-    - cron: '0 4 * * *'    # 12:00 北京时间 — 午饭
-    - cron: '30 9 * * *'   # 17:30 北京时间 — 下午休息
-    - cron: '30 14 * * *'  # 22:30 北京时间 — 晚安
-    - cron: '0 8 * * *'    # 16:00 北京时间 — 随机加餐
+    # 工作日早安 07:30 北京 = 23:30 UTC (周日-周四)
+    - cron: '30 23 * * 0-4'
+    # 周末早安 08:30 北京 = 00:30 UTC (周五-周六 → 周六-周日早上)
+    - cron: '30 0 * * 5-6'
+    # 午饭 12:00 北京 = 04:00 UTC (每天)
+    - cron: '0 4 * * *'
+    # 下午 17:30 北京 = 09:30 UTC (每天)
+    - cron: '30 9 * * *'
+    # 晚安 22:30 北京 = 14:30 UTC (每天)
+    - cron: '30 14 * * *'
+    # 随机加餐 16:00 北京 = 08:00 UTC (每天)
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       category:
-        description: '消息分类 (morning/lunch/afternoon/night/bonus)'
+        description: '消息分类 (morning/lunch/afternoon/night/bonus/study_reminder)'
         required: false
         default: 'bonus'
 
@@ -25,13 +32,18 @@ jobs:
         run: |
           CRON="${{ github.event.schedule }}"
           case "$CRON" in
-            "30 23 * * *") CAT=morning;   PRI=3; TAGS=crossed_swords ;;
-            "0 4 * * *")   CAT=lunch;     PRI=3; TAGS=crossed_swords ;;
-            "30 9 * * *")  CAT=afternoon; PRI=3; TAGS=crossed_swords ;;
-            "30 14 * * *") CAT=night;     PRI=4; TAGS=crossed_swords,zzz ;;
-            "0 8 * * *")   CAT=bonus;     PRI=3; TAGS=crossed_swords ;;
-            *)             CAT="${{ github.event.inputs.category || 'bonus' }}"; PRI=3; TAGS=crossed_swords ;;
+            "30 23 * * 0-4") CAT=morning;   PRI=3; TAGS=crossed_swords ;;
+            "30 0 * * 5-6")  CAT=morning;   PRI=3; TAGS=crossed_swords ;;
+            "0 4 * * *")     CAT=lunch;     PRI=3; TAGS=crossed_swords ;;
+            "30 9 * * *")    CAT=afternoon; PRI=3; TAGS=crossed_swords ;;
+            "30 14 * * *")   CAT=night;     PRI=4; TAGS=crossed_swords,zzz ;;
+            "0 8 * * *")     CAT=bonus;     PRI=3; TAGS=crossed_swords ;;
+            *)               CAT="${{ github.event.inputs.category || 'bonus' }}"; PRI=3; TAGS=crossed_swords ;;
           esac
+          if [ "$CAT" = "study_reminder" ]; then
+            PRI=4
+            TAGS=crossed_swords,books
+          fi
           echo "category=$CAT" >> $GITHUB_OUTPUT
           echo "priority=$PRI" >> $GITHUB_OUTPUT
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
