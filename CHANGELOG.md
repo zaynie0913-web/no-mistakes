@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.38.0](https://github.com/zaynie0913-web/no-mistakes/compare/v1.37.0...v1.38.0) (2026-08-25)
+
+
+### Features
+
+* add keke-push ntfy notification system ([578c2f6](https://github.com/zaynie0913-web/no-mistakes/commit/578c2f6bf97cfb60ef9343031b7b8baddd627ea9))
+* add weekend mode, more messages, study reminder ([4c0dd9b](https://github.com/zaynie0913-web/no-mistakes/commit/4c0dd9bb2c8a9817b35a028f00489f456dd40fd0))
+* switch to Server酱 微信推送 ([f3445ea](https://github.com/zaynie0913-web/no-mistakes/commit/f3445ea6e2bcf258b44b219201a01e1658d85f9e))
+
 ## [1.37.0](https://github.com/kunchenguid/no-mistakes/compare/v1.36.0...v1.37.0) (2026-07-13)
 
 
