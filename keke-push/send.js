@@ -1,12 +1,10 @@
 const messages = require('./messages');
 
 const category = process.argv[2];
-const priority = parseInt(process.argv[3] || '3');
-const tags = (process.argv[4] || 'crossed_swords').split(',');
-const topic = process.env.NTFY_TOPIC;
+const sendkey = process.env.SERVERCHAN_KEY;
 
-if (!topic) {
-  console.error('NTFY_TOPIC not set');
+if (!sendkey) {
+  console.error('SERVERCHAN_KEY not set');
   process.exit(1);
 }
 
@@ -43,21 +41,18 @@ const days = getDaysUntilExam();
 const countdown = days > 0 ? `\n\n📅 距考研还有 ${days} 天` : '';
 const body = msg + countdown;
 
-fetch('https://ntfy.sh', {
+fetch(`https://sctapi.ftqq.com/${sendkey}.send`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    topic: topic,
     title: '屠龙克克',
-    message: body,
-    tags: tags,
-    priority: priority,
+    desp: body,
   }),
-}).then(res => {
-  if (res.ok) {
+}).then(res => res.json()).then(data => {
+  if (data.code === 0) {
     console.log(`Sent [${finalCategory}]: ${msg.substring(0, 40)}...`);
   } else {
-    res.text().then(t => console.error(`Failed: ${res.status} ${t}`));
+    console.error(`Failed: ${data.message}`);
     process.exit(1);
   }
 }).catch(err => {

@@ -12,8 +12,6 @@ on:
     - cron: '30 9 * * *'
     # 晚安 22:30 北京 = 14:30 UTC (每天)
     - cron: '30 14 * * *'
-    # 随机加餐 16:00 北京 = 08:00 UTC (每天)
-    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       category:
@@ -32,23 +30,16 @@ jobs:
         run: |
           CRON="${{ github.event.schedule }}"
           case "$CRON" in
-            "30 23 * * 0-4") CAT=morning;   PRI=3; TAGS=crossed_swords ;;
-            "30 0 * * 5-6")  CAT=morning;   PRI=3; TAGS=crossed_swords ;;
-            "0 4 * * *")     CAT=lunch;     PRI=3; TAGS=crossed_swords ;;
-            "30 9 * * *")    CAT=afternoon; PRI=3; TAGS=crossed_swords ;;
-            "30 14 * * *")   CAT=night;     PRI=4; TAGS=crossed_swords,zzz ;;
-            "0 8 * * *")     CAT=bonus;     PRI=3; TAGS=crossed_swords ;;
-            *)               CAT="${{ github.event.inputs.category || 'bonus' }}"; PRI=3; TAGS=crossed_swords ;;
+            "30 23 * * 0-4") CAT=morning ;;
+            "30 0 * * 5-6")  CAT=morning ;;
+            "0 4 * * *")     CAT=lunch ;;
+            "30 9 * * *")    CAT=afternoon ;;
+            "30 14 * * *")   CAT=night ;;
+            *)               CAT="${{ github.event.inputs.category || 'bonus' }}" ;;
           esac
-          if [ "$CAT" = "study_reminder" ]; then
-            PRI=4
-            TAGS=crossed_swords,books
-          fi
           echo "category=$CAT" >> $GITHUB_OUTPUT
-          echo "priority=$PRI" >> $GITHUB_OUTPUT
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
       - name: Send notification
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: node keke-push/send.js "${{ steps.cat.outputs.category }}" "${{ steps.cat.outputs.priority }}" "${{ steps.cat.outputs.tags }}"
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+        run: node keke-push/send.js "${{ steps.cat.outputs.category }}"
