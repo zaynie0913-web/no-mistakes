@@ -401,7 +401,8 @@ T('新字段都会进导出快照',()=>{
   ['dtl','lastExport','drink'].forEach(f=>ok(dump.indexOf(f)>=0,'缺字段: '+f));
 });
 T('版本号格式正确且只有一处',()=>{
-  const m=html.match(/id="verTag">(v\d+ · \d{2}\/\d{2})</);
+  // v21.1 起版本号可以带小版本号(v21.1),正则放开一位小数位
+  const m=html.match(/id="verTag">(v\d+(?:\.\d+)? · \d{2}\/\d{2})</);
   ok(m,'顶部没有合法的版本号');
   eq(html.split(m[1]).length-1,1,'版本号出现了不止一处');
 });

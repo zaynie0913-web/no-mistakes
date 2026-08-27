@@ -419,7 +419,10 @@ T('记完就写进存档',()=>{
   T('关掉页面重新打开,记录还在',()=>{
     eq(e2.R('D.mockExam.records.length'),2,'重开之后记录少了');
     eq(e2.R('D.mockExam.records[0].mins'),40);
-    ok(e2.doc._ids.mkToggle.textContent.indexOf('共 2 次')>=0,'条上没有摘要');
+    // v21.1:折叠条摘要改成「上次:哪一份 · 几天前」,不再报总次数
+    ok(e2.doc._ids.mkToggle.textContent.indexOf('上次:2023 政治一 · 多选')>=0,
+      '条上没有摘要: '+e2.doc._ids.mkToggle.textContent);
+    ok(e2.doc._ids.mkToggle.textContent.indexOf('今天')>=0,'摘要没有几天前');
   });
   T('重开之后刷次接着往下数',()=>{
     eq(e2.R('mockAttempt("en1",2024,"read")'),2,'刷次没接上');
@@ -685,7 +688,8 @@ const doImport=(e,text)=>{
     ok(['gh','xh'].indexOf(e.R('D.rotGX'))>=0);
   });
   T('版本号格式正确且只有一处',()=>{
-    const m=html.match(/id="verTag">(v\d+ · \d{2}\/\d{2})</);
+    // v21.1 起版本号可以带小版本号(v21.1),正则放开一位小数位
+  const m=html.match(/id="verTag">(v\d+(?:\.\d+)? · \d{2}\/\d{2})</);
     ok(m,'顶部没有合法的版本号');
     eq(html.split(m[1]).length-1,1,'版本号出现了不止一处');
   });

@@ -7,10 +7,29 @@
 ## 这是什么
 
 一位跨专业考研学生(报考北师大文学院中国语言文学,2027 考研 / 2026 年 12 月初试)自用的
-**单文件 HTML 打卡工具**。当前 `dakav21.html`,约 262 KB,HTML + CSS + JS 全在一个文件。
+**单文件 HTML 打卡工具**。当前 `dakav21_1.html`,约 264 KB,HTML + CSS + JS 全在一个文件。
 
-运行环境:**安卓 Chrome 为主**(文件管理器打开本地文件 + 桌面快捷方式),iPad 为辅。
+运行环境:**安卓「夸克浏览器」为主**(文件管理器打开本地文件 + 桌面快捷方式),iPad 为辅。
+**不是 Chrome —— 所有真机判断按夸克来。** 夸克是 Blink 内核,但外壳行为和 Chrome 有差别,
+至少这三点会影响 UI 验收:
+
+- **有效可视高度比视口小一百多像素**(顶部地址栏 + 底部工具栏)。360×780 看着没问题的东西,
+  在 360×520 的实际可用区里可能根本不在首屏。首屏判断一律按 **360×520** 量。
+- **自带「网页字体大小」设置**,会整体放大字号。改动涉及按钮排布时,
+  至少要在 **100% 和 125%** 两档各量一次,确认不横向溢出、文字不被按钮截断。
+- **自带夜间 / 护眼模式,会强制反色**,可能和 v18 的 23 点自动切换叠成双重反色。
+  页面已在 v21.1 声明 `<meta name="color-scheme" content="light dark">` 加
+  `:root{color-scheme:light dark}` / `body{color-scheme:light}` / `body.dark{color-scheme:dark}`,
+  这能挡住 Blink 自己的 Auto Dark Theme;但**挡不住浏览器外壳级的强制反色滤镜**
+  (那是在渲染结果上做反相,页面声明什么都没用),这种只能让用户在夸克里关掉护眼模式。
+
 没有服务端,没有构建步骤,没有网络请求。数据全部在 `localStorage`。
+
+**`file://` 的存储边界(每版换文件名,这条要记牢)**:Chromium 内核下所有 `file://` 页面
+共用同一个 origin(实测 `location.origin === "file://"`),所以 `dakav21.html` →
+`dakav21_1.html` **换文件名不会丢数据**,新文件打开就能读到旧存档(已实测验证)。
+但如果安卓文件管理器把文件以 `content://` 而不是 `file://` 交给浏览器,origin 就变了,
+那种情况下数据读不到。**因此每次换版本文件之前,先让用户导出一份备份**,这是零成本的保险。
 
 ---
 
@@ -48,6 +67,12 @@
 8. **读代码得出的结论必须实测。** 这个项目里「只读不跑」已经错过多次
    (转盘 `slice(0,10)`、感受统计双记、TW 跨周、justRecovering 误判新用户)。
    搭最小环境跑一遍再下结论。
+9. **UI 验收要真渲染、真量像素,不允许估算。** 这个容器里 **Chromium + Playwright 是可用的**
+   (`/opt/pw-browsers/chromium`,playwright 在 `/opt/node22/lib/node_modules/playwright`,
+   直接 `require` 绝对路径即可,不要跑 `playwright install`)。
+   涉及排版、换行、点击区、字号的改动,一律用它在 **320 / 360 / 412** 三个宽度渲染并量出
+   实际 `getBoundingClientRect()`,首屏判断按夸克的 **360×520** 有效高度量。
+   v21 交付时曾写过「容器里没有浏览器,量不出像素」——**那句话是错的**,不要再犯。
 
 ---
 
@@ -217,11 +242,11 @@ for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js
 ```bash
 python3 -c "
 import re,io
-s=io.open('dakav21.html',encoding='utf-8').read()
+s=io.open('dakav21_1.html',encoding='utf-8').read()
 io.open('tests/app.js','w',encoding='utf-8').write(re.findall(r'<script[^>]*>(.*?)</script>',s,re.S)[0])
 "
 node --check tests/app.js
-cp dakav21.html tests/app.html   # 测试脚本从当前目录读 app.html
+cp dakav21_1.html tests/app.html   # 测试脚本从当前目录读 app.html
 ```
 
 ### 测试失败必须先分类再处理

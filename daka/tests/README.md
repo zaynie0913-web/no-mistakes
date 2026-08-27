@@ -1,13 +1,13 @@
 # 每日打卡 · 测试套件
 
-对应 **v21 · 08/27**,617 项全过。
+对应 **v21.1 · 08/27**,617 项全过。
 
 ## 跑法
 
 测试脚本从**当前目录**读 `app.html`。改完 html 之后:
 
 ```bash
-cp ../dakav21.html app.html
+cp ../dakav21_1.html app.html
 python3 -c "
 import re,io
 s=io.open('app.html',encoding='utf-8').read()
