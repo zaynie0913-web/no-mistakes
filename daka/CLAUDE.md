@@ -7,7 +7,7 @@
 ## 这是什么
 
 一位跨专业考研学生(报考北师大文学院中国语言文学,2027 考研 / 2026 年 12 月初试)自用的
-**单文件 HTML 打卡工具**。当前 `dakav22.html`,约 274 KB,HTML + CSS + JS 全在一个文件。
+**单文件 HTML 打卡工具**。当前 `dakav22_1.html`,约 275 KB,HTML + CSS + JS 全在一个文件。
 
 运行环境:**安卓「夸克浏览器」为主**(文件管理器打开本地文件 + 桌面快捷方式),iPad 为辅。
 **不是 Chrome —— 所有真机判断按夸克来。** 夸克是 Blink 内核,但外壳行为和 Chrome 有差别,
@@ -64,10 +64,16 @@
 6. **文案禁用词**:必须、应该、赶紧、别偷懒、不许、否则、浪费。
    **不用 emoji;颜文字可以**(用户明确同意,如 `( ･ω･)b`)。
 7. **不要擅自扩功能。** 只做 `TASKS.md` 里派给你的事。
-8. **读代码得出的结论必须实测。** 这个项目里「只读不跑」已经错过多次
+8. **任何「点了没反应」都是 P0,哪怕它在逻辑上是对的。**
+   v22 自查时撞到一个自己写的:计时进行中点「保存」,代码是 `if(!mockRun())mkSaveAll()`,
+   意图是「计时中别误存」,实现出来却是**静默吞掉** —— 点下去零反应。
+   对一个启动困难的用户,零反应等于「工具坏了」,她不会 debug,她会关掉。
+   而且这个判断还把「计时挂在一个已经不在本屏的题型上」变成了死锁。
+   **守则:任何按钮在任何状态下点下去,要么发生事情,要么给一句话。不允许第三种。**
+9. **读代码得出的结论必须实测。** 这个项目里「只读不跑」已经错过多次
    (转盘 `slice(0,10)`、感受统计双记、TW 跨周、justRecovering 误判新用户)。
    搭最小环境跑一遍再下结论。
-9. **UI 验收要真渲染、真量像素,不允许估算。** 这个容器里 **Chromium + Playwright 是可用的**
+10. **UI 验收要真渲染、真量像素,不允许估算。** 这个容器里 **Chromium + Playwright 是可用的**
    (`/opt/pw-browsers/chromium`,playwright 在 `/opt/node22/lib/node_modules/playwright`,
    直接 `require` 绝对路径即可,不要跑 `playwright install`)。
    涉及排版、换行、点击区、字号的改动,一律用它在 **320 / 360 / 412** 三个宽度渲染并量出
@@ -255,7 +261,7 @@ days 内部字段随 days 走,但**必须在 `load` 和 `import` 两处都做兜
 
 ## 测试
 
-十二套,共 **675 项,当前全过**。
+十二套,共 **679 项,当前全过**。
 
 ```bash
 cd tests
@@ -263,18 +269,18 @@ for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js
   echo -n "$f: "; node $f 2>&1 | tail -1; done
 ```
 
-期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 75 / 59**,全部 0 失败。
+期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 75 / 63**,全部 0 失败。
 
 改了 html 之后,先抽 JS 查语法:
 
 ```bash
 python3 -c "
 import re,io
-s=io.open('dakav22.html',encoding='utf-8').read()
+s=io.open('dakav22_1.html',encoding='utf-8').read()
 io.open('tests/app.js','w',encoding='utf-8').write(re.findall(r'<script[^>]*>(.*?)</script>',s,re.S)[0])
 "
 node --check tests/app.js
-cp dakav22.html tests/app.html   # 测试脚本从当前目录读 app.html
+cp dakav22_1.html tests/app.html   # 测试脚本从当前目录读 app.html
 ```
 
 ### 测试失败必须先分类再处理

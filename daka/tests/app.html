@@ -793,7 +793,7 @@ body.dark .qnav button{background:var(--card-d)}
 <div class="wrap">
 
 <header>
-  <h1>每日打卡 <span class="ver" id="verTag">v22 · 08/27</span></h1>
+  <h1>每日打卡 <span class="ver" id="verTag">v22.1 · 08/27</span></h1>
   <div class="today" id="todayLine"></div>
   <div class="sbadge" id="saveState">检查存储…</div>
 </header>
@@ -3282,6 +3282,18 @@ function mkReset(){
    不合成一条,也不把总用时摊派下去 —— 摊派出来的数字是假的。 */
 function mkSaveAll(){
   const sub=mkSub,y=mkYear;
+  /* 还在计时就先把它收掉:计时挂在本次选中的某一组上,就把实际分钟数落到那一组;
+     挂在别处(她中途换过题型)就直接结束它。
+     以前这里是「计时中不让保存」,可那是静默的 —— 点下去没有任何反应,
+     人只会以为工具坏了,然后重复点、然后放弃。保存永远要有结果。 */
+  const rn=mockRun();
+  if(rn){
+    if(rn.subject===sub&&rn.year===y&&mkScopes.indexOf(rn.scope)>=0){
+      mkMinsIn[rn.scope]=Math.min(300,Math.max(1,Math.round(mockElapsed()/60000)));
+    }
+    delete mockData().run;
+    if(mkTid){clearInterval(mkTid);mkTid=null;}
+  }
   const order=MOCK_SUBJECTS[sub].sc.map(x=>x.k);
   const list=mkScopes.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
   const made=list.map(k=>mockAdd(sub,y,k,mkMinsIn[k],mkScoreIn[k],mkWrongIn[k]));
@@ -3328,6 +3340,22 @@ function renderMock(){
     const sub=mkSub;
     const order=MOCK_SUBJECTS[sub].sc.map(x=>x.k);
     const list=mkScopes.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+    /* 计时挂在一个已经不在本屏的题型上(她中途返回换过选择):
+       给一个看得见的出口,不然顶栏一直写着「正在计时」而屏幕上找不到它 */
+    const rnOut=mockRun();
+    if(rnOut&&list.indexOf(rnOut.scope)<0){
+      const w=mk("div","mkpanel");
+      w.appendChild(mk("div","mkt","还有一个计时在走:"+rnOut.year+" "
+        +mockSubName(rnOut.subject)+" · "+mockScName(rnOut.subject,rnOut.scope)));
+      const wr=mk("div","mkrow");
+      wr.appendChild(chip("结束那个计时",()=>{
+        delete mockData().run;
+        if(mkTid){clearInterval(mkTid);mkTid=null;}
+        save();renderMock();
+      }));
+      w.appendChild(wr);
+      box.appendChild(w);
+    }
     list.forEach(k=>{
       const def=mockSc(sub,k);
       const p=mk("div","mkpanel");
@@ -3433,7 +3461,7 @@ function renderMock(){
     });
     const act=mk("div","mkrow");
     act.appendChild(chip(mkScopes.length>1?("保存这 "+mkScopes.length+" 条"):"保存",
-      ()=>{if(!mockRun())mkSaveAll();},1));
+      ()=>{mkSaveAll();},1));
     act.appendChild(chip("返回",()=>{mkEntry=false;renderMock();}));
     box.appendChild(act);
     if(mkMsg)box.appendChild(mk("p","mkmsg",mkMsg));
@@ -5485,7 +5513,8 @@ $("#impFile").onchange=e=>{
       mbox.records.forEach(r=>{msee[r.id]=1;});
       incoming.box.records.forEach(r=>{if(!msee[r.id]){mbox.records.push(r);msee[r.id]=1;}});
       mbox.records.sort((a,b)=>(a.d<b.d?-1:(a.d>b.d?1:(a.ts||0)-(b.ts||0))));
-      if(incoming.box.run)mbox.run=incoming.box.run;
+      /* 计时是「这台设备此刻正在做的事」,不是可迁移的记录 ——
+         把别的设备的计时搬过来只会变成一个谁也结束不了的幽灵 */
       T.mockExam=mbox;
       const mdrop=mine.dropped+incoming.dropped;
       // 走到这里没抛错,才真正换过去 —— 这一行之前 D 一直是原样

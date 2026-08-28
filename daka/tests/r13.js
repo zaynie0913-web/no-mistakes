@@ -478,7 +478,52 @@ T('快捷栏在「今天」tab 最上面',()=>{
   ok(i<j&&j<k,'快捷栏不在今天 tab 顶部');
 });
 
-console.log('【10 · 不回归】');
+console.log('【10 · 计时与保存的死角(v22.1 自查补的)】');
+T('计时中点保存,一定有结果,不会静默无反应',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);
+  tap(e,'开始计时');
+  e.st.off+=12*60*1000;
+  tap(e,'保存');
+  eq(recs(e).length,1,'计时中点保存被静默吞掉了');
+  eq(recs(e)[0].mins,12,'没把计时的实际时长收进来');
+  eq(e.R('!!mockRun()'),false,'保存之后计时还挂着');
+});
+T('中途换过题型,计时变成孤儿时也存得下去',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形']);
+  tap(e,'开始计时');
+  tap(e,'返回');                 // 回到选题型
+  tap(e,'完形');                 // 取消完形,计时就没有落脚点了
+  tap(e,'阅读一');
+  tap(e,'下一步 · 1 项');
+  ok(has(e,'结束那个计时'),'孤儿计时没有给出口');
+  tap(e,'保存');
+  eq(recs(e).length,1,'孤儿计时把保存闸死了');
+  eq(recs(e)[0].scope,'read1');
+  eq(e.R('!!mockRun()'),false,'孤儿计时没被收掉');
+});
+T('孤儿计时可以单独结束掉,不影响这一屏的录入',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形']);
+  tap(e,'开始计时');
+  tap(e,'返回');tap(e,'完形');tap(e,'阅读一');tap(e,'下一步 · 1 项');
+  tap(e,'结束那个计时');
+  eq(e.R('!!mockRun()'),false,'没结束掉');
+  eq(recs(e).length,0,'结束计时不该顺手存一条');
+  ok(has(e,'保存'),'结束之后还能正常保存');
+});
+T('导入不会把别的设备的计时搬过来',()=>{
+  const e=fresh();
+  const inc={version:1,metadata:{},records:[],
+    run:{subject:"en1",year:2024,scope:"cloze",start:Date.now()}};
+  eq(e.R('!!mockFix('+JSON.stringify(inc)+').box.run'),true,'mockFix 本身仍保留 run(load 要用)');
+  const i=js.indexOf('$("#impFile").onchange');
+  const seg=js.slice(i,js.indexOf('D=T;',i));
+  ok(seg.indexOf('mbox.run=incoming.box.run')<0,'导入还在搬别的设备的计时');
+});
+
+console.log('【11 · 不回归】');
 T('达标口径没被真题影响',()=>{
   const e=fresh();
   toEntry(e,'英语一',2024,['整套']);tap(e,'保存');
