@@ -3365,6 +3365,9 @@ function mkReset(){
 /* 保存:选了几个题型就生成几条独立记录,每条各自算刷次、各自存自己那一格的用时。
    不合成一条,也不把总用时摊派下去 —— 摊派出来的数字是假的。 */
 function mkSaveAll(){
+  /* 连点两下保存:第一下已经把状态清空并重画,第二下却可能落在还没被替换掉的
+     旧按钮上,带着 mkSub=null 冲进来。没有这道守卫就是一个 JS 异常。 */
+  if(!mkSub||mkYear==null||!mkScopes.length)return null;
   const sub=mkSub,y=mkYear;
   /* 还在计时就先把它收掉:计时挂在本次选中的某一组上,就把实际分钟数落到那一组;
      挂在别处(她中途换过题型)就直接结束它。

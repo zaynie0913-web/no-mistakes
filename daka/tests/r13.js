@@ -694,6 +694,23 @@ T('撤销指针不进导出',()=>{
   ok(js.indexOf('delete snap.mockExam.undo')>=0,'导出没剔除撤销指针');
 });
 
+T('连点两下保存:只存一批,而且不抛异常',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);
+  const btn=chips(e).find(c=>c._text==='保存');
+  btn.onclick();
+  btn.onclick();            // 第二下落在已经被换掉的旧按钮上
+  btn.onclick();
+  eq(recs(e).length,1,'连点存了不止一批');
+});
+T('状态被清空后再调 mkSaveAll,安全返回而不是抛错',()=>{
+  const e=fresh();
+  eq(e.R('mkSaveAll()'),null,'没有守卫,mkSub 为空时会抛异常');
+  e.R('mkSub="en1";mkYear=null;mkScopes=["read1"];');
+  eq(e.R('mkSaveAll()'),null,'年份为空时也要挡住');
+  eq(recs(e).length,0,'空状态存出了记录');
+});
+
 console.log('【13 · 不回归】');
 T('达标口径没被真题影响',()=>{
   const e=fresh();
