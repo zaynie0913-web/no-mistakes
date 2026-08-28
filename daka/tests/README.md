@@ -1,24 +1,24 @@
 # 每日打卡 · 测试套件
 
-对应 **v21.1 · 08/27**,617 项全过。
+对应 **v22 · 08/27**,675 项全过。
 
 ## 跑法
 
 测试脚本从**当前目录**读 `app.html`。改完 html 之后:
 
 ```bash
-cp ../dakav21_1.html app.html
+cp ../dakav22.html app.html
 python3 -c "
 import re,io
 s=io.open('app.html',encoding='utf-8').read()
 io.open('app.js','w',encoding='utf-8').write(re.findall(r'<script[^>]*>(.*?)</script>',s,re.S)[0])
 "
 node --check app.js
-for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js r12.js; do
+for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js r12.js r13.js; do
   echo -n "$f: "; node $f 2>&1 | tail -1; done
 ```
 
-期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 76**,全部 0 失败。
+期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 75 / 59**,全部 0 失败。
 
 ## 文件
 
@@ -33,7 +33,8 @@ for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js
 | `r9.js` | 37 | v18 四组 |
 | `r10.js` | 27 | v19 四组 |
 | `r11.js` | 34 | v20 八组:轮换指针 / 自定义清单让路 / 标准线渲染 / 断档恢复文案 / 统计三处接入 / 迁移对称 / 达标口径不受影响 / 不回归 |
-| `r12.js` | 76 | v21 十组:记一条真题 / 刷次自动算 / 计时与手动填 / 归属哪一天 / 并入现有统计 / 存得住 / 兜底与迁移 / 导入导出 / 录入负担与文案 / 不回归 |
+| `r13.js` | 59 | v22 十组:题型清单重写 / 旧记录不迁移 / 四篇阅读各自刷次 / 多选生成 N 条 / 错题数算分 / 用时滑块 / 建议用时 / 一个字都不用打 / 顶部快捷栏 / 不回归 |
+| `r12.js` | 75 | v21 十组:记一条真题 / 刷次自动算 / 计时与手动填 / 归属哪一天 / 并入现有统计 / 存得住 / 兜底与迁移 / 导入导出 / 录入负担与文案 / 不回归 |
 | `qcheck.js` | 30 | 每日一句 |
 | `tagcheck.js` | 18 | 健康标签 |
 

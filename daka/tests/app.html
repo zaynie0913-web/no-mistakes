@@ -732,10 +732,11 @@ body.dark .mkbar{background:var(--card-d)}
 .mkrow:last-of-type{margin-bottom:0}
 .mklab{width:100%;font-size:var(--fz-info);color:var(--mo-3);font-family:var(--serif);
   letter-spacing:.06em;margin-bottom:2px}
-/* 点击区:项目里已有的 ≥40px 标准,这里用 min-height 钉死,不靠 padding 碰运气 */
+/* 点击区:v22 统一抬到 44px —— 步进器两侧按钮有硬性 ≥44px 要求,
+   同一区里的按钮高度不该一半 40 一半 44。用 min-height 钉死,不靠 padding 碰运气 */
 .mkchip{font-family:var(--sans);font-size:var(--fz-act);padding:6px 14px;border-radius:20px;
   border:1px solid var(--line);background:transparent;color:var(--mo-2);cursor:pointer;
-  white-space:nowrap;flex:none;min-height:40px;
+  white-space:nowrap;flex:none;min-height:44px;
   display:inline-flex;align-items:center;justify-content:center}
 .mkchip.on{border-color:var(--qingbi);color:var(--qingbi);background:#fff;font-weight:600}
 /* 年份:每行固定 4 个(gap 6px,所以每个是 25% - 4.5px)。
@@ -750,20 +751,49 @@ body.dark .mkchip.on{background:transparent}
   line-height:1.6;margin-bottom:9px}
 .mkclk{font-family:var(--serif);font-size:24px;color:var(--zhu);letter-spacing:.04em;
   margin-right:6px;min-width:74px}
-.mkin{flex:1 1 auto;min-width:64px;font-size:var(--fz-act);padding:8px 10px;
-  border:1px solid var(--line);background:transparent;color:var(--mo);border-radius:6px;
-  min-height:40px}
 .mkhist{font-size:var(--fz-info);color:var(--mo-3);padding:7px 0;
   border-bottom:1px solid var(--line)}
 .mkhist:last-of-type{border-bottom:none}
 .mkmsg{font-size:var(--fz-info);color:var(--shiqing);font-family:var(--serif);margin:9px 0 0}
+/* v22:录入全部改成点和滑,这一区没有任何要打字的控件 */
+.mkval{font-family:var(--serif);font-size:var(--fz-key);color:var(--mo);
+  line-height:1.6;margin:2px 0 6px}
+.mksug{font-size:var(--fz-info);color:var(--mo-3);line-height:1.7;margin:4px 0 0}
+.mklab2{font-size:var(--fz-info);color:var(--mo-3);font-family:var(--serif)}
+.mkslide-row{gap:8px;flex-wrap:nowrap}
+/* 轨道就是可点区域:44px 高的胖轨,拖不准也压得住 */
+.mkslide{-webkit-appearance:none;appearance:none;flex:1 1 auto;min-width:0;width:100%;
+  height:44px;background:transparent;margin:0;padding:0;cursor:pointer}
+.mkslide::-webkit-slider-runnable-track{height:44px;border-radius:22px;
+  background:var(--zhi-2);border:1px solid var(--line)}
+.mkslide::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:36px;height:36px;border-radius:50%;background:var(--qingbi);
+  border:2px solid #fff;margin-top:3px}
+.mkslide::-moz-range-track{height:44px;border-radius:22px;
+  background:var(--zhi-2);border:1px solid var(--line)}
+.mkslide::-moz-range-thumb{width:36px;height:36px;border-radius:50%;
+  background:var(--qingbi);border:2px solid #fff}
+body.dark .mkslide::-webkit-slider-runnable-track{background:#243033}
+body.dark .mkslide::-moz-range-track{background:#243033}
+/* 错题数:题数 ≤8 排一行数字,一行固定 6 个,末行不会被拉宽 */
+.mkrow.mkwrap{gap:6px}
+.mkchip.w{flex:0 0 calc(16.6666% - 5px);width:calc(16.6666% - 5px);padding:6px 2px}
+.mknum{font-family:var(--serif);font-size:22px;color:var(--zhu);min-width:52px;
+  text-align:center;line-height:44px}
+/* 顶部快捷栏:页面很长,给一条一步到位的导航,不折叠也不隐藏任何东西 */
+.qnav{display:flex;gap:7px;margin:0 0 14px}
+.qnav button{flex:1 1 0;min-width:0;min-height:44px;font-family:var(--sans);
+  font-size:var(--fz-act);color:var(--mo-2);background:#fff;
+  border:1px solid var(--line);border-radius:8px;cursor:pointer;white-space:nowrap}
+.qnav button:hover,.qnav button:active{border-color:var(--qingbi);color:var(--qingbi)}
+body.dark .qnav button{background:var(--card-d)}
 </style>
 </head>
 <body>
 <div class="wrap">
 
 <header>
-  <h1>每日打卡 <span class="ver" id="verTag">v21.1 · 08/27</span></h1>
+  <h1>每日打卡 <span class="ver" id="verTag">v22 · 08/27</span></h1>
   <div class="today" id="todayLine"></div>
   <div class="sbadge" id="saveState">检查存储…</div>
 </header>
@@ -775,6 +805,12 @@ body.dark .mkchip.on{background:transparent}
 </div>
 
 <section role="tabpanel" id="tp-a" aria-labelledby="tb-a">
+
+<div class="qnav" id="qnav">
+  <button id="qnMk">真题训练</button>
+  <button id="qnPomo">番茄钟</button>
+  <button id="qnRelax">歇一下</button>
+</div>
 
 <div class="status" id="status">
   <div class="big" id="stBig">今天还没开始</div>
@@ -882,7 +918,7 @@ body.dark .mkchip.on{background:transparent}
 </div>
 
 <h2>累了就歇会儿 <span class="hint">歇是为了走更远</span></h2>
-<div class="relaxbox">
+<div class="relaxbox" id="relaxBox">
   <p class="rt" id="relaxText"></p>
   <div class="rrow">
     <button id="relaxNew">换一个</button>
@@ -1271,27 +1307,81 @@ const PRESET=[
   {k:"p_zz",n:"政治(九月起)",m:"",late:1,s:"政治",mins:30},
   {k:"p_wx",n:"文献学(十月起)",m:"",late:1,s:"文献学",mins:30}
 ];
-/* ---------- 真题训练(v21 · Stage 1) ----------
-   记录走自己的命名空间 D.mockExam,不塞进 d.min/d.std/d.plus 那三档 ——
-   真题是「哪一年、哪个题型、第几刷」,和每天勾一下的清单不是同一种东西。
-   但「统计」不另起一套:时长和最后一次记录都并进现有的 todayMins()/
-   subjLastSeen(),分类用 SUBJECTS_BUILTIN 里已经预留好的「真题」。 */
+/* ---------- 真题训练(v22 · Stage 2) ----------
+   记录走自己的命名空间 D.mockExam,不塞进 d.min/d.std/d.plus 那三档。
+   统计不另起一套:时长和最后一次记录并进 todayMins()/subjLastSeen(),
+   分类用 SUBJECTS_BUILTIN 里已经预留好的「真题」。
+
+   v22 三件事:题型清单重写(阅读拆四篇、新题型改叫段落匹配)、
+   题型可多选(连做一次记完)、录入全部改成点和滑 —— 一个字都不用打。
+
+   每个题型带着自己的「客观题参数」和「考场建议用时」:
+     q    题目数(有 q = 客观题,只点错了几题,分数系统算;没有 q = 主观题,只拖分数)
+     per  每题分值
+     full 满分
+     mins 考场建议用时(分钟)—— 固定常量表,不是按她的历史推算的
+   老记录里的 scope(read / new)留在 old 里:照常显示、照常算时长,
+   但不出现在可选清单里 —— 历史不迁移、不改写,新记录只能选新清单。 */
 const MOCK_SUBJECTS={
-  en1:{k:"en1",n:"英语一",sc:[
-    {k:"full",n:"整套"},{k:"cloze",n:"完形"},{k:"read",n:"阅读"},{k:"new",n:"新题型"},
-    {k:"trans",n:"翻译"},{k:"small",n:"小作文"},{k:"big",n:"大作文"}]},
-  pol1:{k:"pol1",n:"政治一",sc:[
-    {k:"full",n:"整套"},{k:"single",n:"单选"},{k:"multi",n:"多选"},{k:"analysis",n:"分析题"}]}
+  en1:{k:"en1",n:"英语一",y0:2010,
+    sc:[
+      {k:"cloze", n:"完形",     q:20,per:0.5,full:10, mins:15},
+      {k:"read1", n:"阅读一",   q:5, per:2,  full:10, mins:15},
+      {k:"read2", n:"阅读二",   q:5, per:2,  full:10, mins:15},
+      {k:"read3", n:"阅读三",   q:5, per:2,  full:10, mins:15},
+      {k:"read4", n:"阅读四",   q:5, per:2,  full:10, mins:15},
+      {k:"match", n:"段落匹配", q:5, per:2,  full:10, mins:15},
+      {k:"trans", n:"翻译",                  full:10, mins:20},
+      {k:"small", n:"小作文",                full:10, mins:15},
+      {k:"big",   n:"大作文",                full:20, mins:35},
+      {k:"full",  n:"整套",                  full:100,mins:180}],
+    old:{read:"阅读",new:"新题型"}},
+  pol1:{k:"pol1",n:"政治",y0:2015,
+    sc:[
+      /* 多选错一个就不得分,没有部分分,所以错题数直接乘每题 2 分 */
+      {k:"single",  n:"单选",   q:16,per:1,full:16, mins:15},
+      {k:"multi",   n:"多选",   q:17,per:2,full:34, mins:25},
+      {k:"analysis",n:"分析题",           full:50, mins:120},
+      {k:"full",    n:"整套",             full:100,mins:180}],
+    old:{}}
 };
-/* 政治是全国统考,不存在「北京政治一独立试卷」,所以这里没有地区维度。 */
-const MOCK_YEARS=(()=>{const a=[];for(let y=2026;y>=2015;y--)a.push(y);return a;})();
-const MOCK_SUBJ="真题";                 // 归到既有分类,不新建第二个分类概念
+const MOCK_SUBJ="真题";                 // 归到既有分类,不新建分类概念
+const MOCK_Y1=2026;                     // 最近一年,各科往回数到自己的 y0
 const mockSubName=k=>(MOCK_SUBJECTS[k]||{n:k}).n;
-const mockScName=(sub,k)=>{
-  const s=MOCK_SUBJECTS[sub];if(!s)return k;
-  const hit=s.sc.find(x=>x.k===k);return hit?hit.n:k;
-};
-/* 一条记录读出来长什么样:2024 英语一 · 阅读 · 第 2 刷 */
+function mockYears(sub){
+  const s=MOCK_SUBJECTS[sub];if(!s)return [];
+  const a=[];for(let y=MOCK_Y1;y>=s.y0;y--)a.push(y);
+  return a;
+}
+/* 题型定义。查得到就是现行题型,查不到再看老名字,都没有才退回 key */
+function mockSc(sub,k){
+  const s=MOCK_SUBJECTS[sub];if(!s)return null;
+  return s.sc.find(x=>x.k===k)||null;
+}
+function mockScName(sub,k){
+  const hit=mockSc(sub,k);if(hit)return hit.n;
+  const s=MOCK_SUBJECTS[sub];
+  if(s&&s.old&&s.old[k])return s.old[k];   // v21 存的「阅读」「新题型」原样显示
+  return k;
+}
+const mockIsObj=(sub,k)=>{const s=mockSc(sub,k);return !!(s&&s.q>0);};
+/* 客观题的分数由错题数算,不让她自己算:满分 − 错题数 × 每题分值 */
+function mockScoreOf(sub,k,wrong){
+  const s=mockSc(sub,k);
+  if(!s||!(s.q>0)||wrong==null||wrong==="")return null;
+  const w=Math.max(0,Math.min(s.q,Math.round(Number(wrong))));
+  return Math.round((s.full-w*s.per)*10)/10;
+}
+/* 考场建议用时:固定常量表 */
+function mockDefMins(sub,k){
+  const s=mockSc(sub,k);
+  return s?s.mins:25;
+}
+function mockFullOf(sub,k){
+  const s=mockSc(sub,k);
+  return s?s.full:null;
+}
+/* 一条记录读出来长什么样:2024 英语一 · 阅读一 · 第 2 刷 */
 const mockLabel=r=>r.year+" "+mockSubName(r.subject)+" · "+mockScName(r.subject,r.scope);
 /* 「几天前」——走 daysTo(),它内部用的是 dkey(studyNow()),
    凌晨两点看到的仍然是「昨天」那一场,不会因为过了 0 点就多算一天。
@@ -2816,6 +2906,16 @@ function teaRef(){
 $("#cheerNew").onclick=()=>{cheerNow=pickCheer();$("#cheerText").textContent=cheerNow;};
 $("#kyToggle").onclick=()=>{kyOpen=!kyOpen;renderKy();};
 $("#mkToggle").onclick=()=>{mkOpen=!mkOpen;if(!mkOpen)mkMsg="";renderMock();};
+/* 顶部快捷栏:只是滚过去,不改任何结构、不折叠任何东西。
+   点「真题训练」顺手把它展开 —— 跳过去看到的是一条收起的横条没有意义。 */
+function qnGo(sel,open){
+  const el=$(sel);if(!el)return;
+  if(open&&!mkOpen){mkOpen=true;renderMock();}
+  if(el.scrollIntoView)el.scrollIntoView({behavior:"smooth",block:"start"});
+}
+$("#qnMk").onclick=()=>qnGo("#mkBar",1);
+$("#qnPomo").onclick=()=>qnGo("#timerBox");
+$("#qnRelax").onclick=()=>qnGo("#relaxBox");
 $("#teaRef").onchange=()=>{
   const v=Number($("#teaRef").value);
   D.teaRef=(isFinite(v)&&v>=0&&v<=21)?Math.round(v):TEA_REF_DEFAULT;
@@ -3052,11 +3152,14 @@ function renderKy(){
    算好的键,统计时不再拿时间戳反推,免得和 DAYCUT 换算出现两套口径。 */
 function mockEmpty(){return {version:1,records:[],metadata:{}};}
 /* 一条记录要么能被认出来、能被统计读懂,要么宁可丢掉:
-   科目和题型得认识,年份日期用时得像样。半条记录混进时长统计比丢掉更糟。 */
+   科目和题型得认识,年份日期用时得像样。半条记录混进时长统计比丢掉更糟。
+   题型认「现行清单」和「老名字」两套 —— v21 存下的 read / new 不能被当成脏数据丢掉。 */
 function mockValid(r){
   if(!r||typeof r!=="object")return false;
   const sub=MOCK_SUBJECTS[r.subject];
-  if(!sub||!sub.sc.some(x=>x.k===r.scope))return false;
+  if(!sub)return false;
+  const known=sub.sc.some(x=>x.k===r.scope)||!!(sub.old&&sub.old[r.scope]);
+  if(!known)return false;
   const y=Number(r.year);
   if(!(y>=2000&&y<=2100))return false;
   if(typeof r.d!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(r.d))return false;
@@ -3084,11 +3187,12 @@ function mockFix(box){
       const id=mockIdOf(r);
       if(seen[id])return;                 // 同一条记录不留两份
       seen[id]=1;
-      const sc=(r.score===null||r.score===undefined||r.score==="")?null
-        :(isFinite(Number(r.score))?Number(r.score):null);
+      const num=v=>(v===null||v===undefined||v==="")?null
+        :(isFinite(Number(v))?Number(v):null);
       out.records.push({id:id,subject:r.subject,year:Number(r.year),scope:r.scope,
         attempt:Number(r.attempt)>0?Math.round(Number(r.attempt)):1,
-        d:r.d,mins:Math.round(Number(r.mins)),score:sc,
+        d:r.d,mins:Math.round(Number(r.mins)),
+        wrong:num(r.wrong),score:num(r.score),
         done:r.done===false?false:true,ts:Number(r.ts)||0});
     });
     if(box.run&&typeof box.run==="object")out.run=box.run;
@@ -3107,29 +3211,37 @@ function mockRecords(){
 }
 function mockOf(k){return mockRecords().filter(r=>r&&r.d===k);}
 function mockMins(k){return mockOf(k).reduce((a,r)=>a+(Number(r.mins)||0),0);}
-/* 刷次不用她填,系统数:同科目 + 同年份 + 同题型,已经有几条就是第几刷 */
+/* 刷次不用她填,系统数:同科目 + 同年份 + 同题型,已经有几条就是第几刷。
+   阅读拆成四篇之后,四篇各数各的 —— 只写了阅读三,阅读一的刷次不动。 */
 function mockAttempt(sub,y,sc){
   return mockRecords().filter(r=>r.subject===sub&&r.year===Number(y)&&r.scope===sc).length+1;
 }
-function mockAdd(sub,y,sc,mins,score){
+function mockAdd(sub,y,sc,mins,score,wrong){
   const dk=refreshDay();
   const b=mockData();
-  const v=(score===null||score===undefined||score==="")?null
-    :(isFinite(Number(score))?Number(score):null);
+  const num=v=>(v===null||v===undefined||v==="")?null
+    :(isFinite(Number(v))?Number(v):null);
+  const w=num(wrong);
   const rec={id:"mk_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7),
     subject:sub,year:Number(y),scope:sc,
     attempt:mockAttempt(sub,y,sc),
-    d:dk,mins:Math.max(1,Math.round(Number(mins)||0)),score:v,done:true,ts:Date.now()};
+    d:dk,mins:Math.max(1,Math.round(Number(mins)||0)),
+    wrong:w,
+    // 客观题的分数一律由错题数算,不接受外面传进来的数,免得两个来源打架
+    score:mockIsObj(sub,sc)?mockScoreOf(sub,sc,w):num(score),
+    done:true,ts:Date.now()};
   b.records.push(rec);
   return rec;
 }
 
 /* ---------- 真题训练:界面 ----------
-   折叠条照搬考研节点条那一套(收起一行摘要,点开才展开),
-   路径是 科目 → 年份 → 题型 → 开始/完成,每一层都能返回上一层。 */
+   路径:科目 → 年份 → 题型(可多选)→ 录入屏 → 保存。
+   录入屏上一个字都不用打:用时是滑块(打开就停在考场建议值上),
+   客观题只点「错了几题」,主观题只拖分数。全程没有文本输入框。 */
 const MOCK_RUN_MAX=6*3600*1000;          // 计时忘了结束的上限,超过就不当成一次训练
-let mkOpen=false,mkSub=null,mkYear=null,mkScope=null;
-let mkMsg="",mkMinsIn="",mkScoreIn="",mkTid=null,mkClkEl=null;
+let mkOpen=false,mkSub=null,mkYear=null,mkScopes=[],mkEntry=false;
+let mkMinsIn={},mkWrongIn={},mkScoreIn={};
+let mkMsg="",mkTid=null,mkClkEl=null;
 function mockRun(){
   const b=D.mockExam,r=b&&b.run;
   return (r&&typeof r==="object"&&MOCK_SUBJECTS[r.subject]&&Number(r.start)>0)?r:null;
@@ -3154,17 +3266,42 @@ function mkTimer(){
     if(mkClkEl)mkClkEl.textContent=mkClock(mockElapsed());
   },1000);
 }
-function mkSaved(rec){
-  mkMsg="记下了:"+mockLabel(rec)+" · 第 "+rec.attempt+" 刷 · "+rec.mins+" 分钟"
-    +(rec.score!=null?" · "+rec.score+" 分":"");
-  mkSub=null;mkYear=null;mkScope=null;mkMinsIn="";mkScoreIn="";
+/* 进录入屏:每个选中的题型都先把用时预填成考场建议值 —— 不动也能直接保存 */
+function mkEnter(){
+  mkEntry=true;
+  mkScopes.forEach(k=>{
+    if(mkMinsIn[k]==null)mkMinsIn[k]=mockDefMins(mkSub,k);
+  });
+  renderMock();
+}
+function mkReset(){
+  mkSub=null;mkYear=null;mkScopes=[];mkEntry=false;
+  mkMinsIn={};mkWrongIn={};mkScoreIn={};
+}
+/* 保存:选了几个题型就生成几条独立记录,每条各自算刷次、各自存自己那一格的用时。
+   不合成一条,也不把总用时摊派下去 —— 摊派出来的数字是假的。 */
+function mkSaveAll(){
+  const sub=mkSub,y=mkYear;
+  const order=MOCK_SUBJECTS[sub].sc.map(x=>x.k);
+  const list=mkScopes.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  const made=list.map(k=>mockAdd(sub,y,k,mkMinsIn[k],mkScoreIn[k],mkWrongIn[k]));
+  const total=made.reduce((a,r)=>a+r.mins,0);
+  mkMsg=made.length===1
+    ?("记下了:"+mockLabel(made[0])+" · 第 "+made[0].attempt+" 刷 · "+made[0].mins+" 分钟"
+      +(made[0].score!=null?" · "+made[0].score+" 分":""))
+    :("记下了 "+made.length+" 条:"+made.map(r=>mockScName(sub,r.scope)).join("、")
+      +" · 合计 "+total+" 分钟");
+  mkReset();
   save();render();
+  return made;
 }
 function renderMock(){
   const bar=$("#mkToggle"),box=$("#mkList");
   if(!bar||!box)return;
   mockStale();
   const run=mockRun(),recs=mockRecords();
+  // 计时中途关掉页面再回来:把流程恢复到那一条上,免得「完成」没有落脚点
+  if(run&&!mkSub){mkSub=run.subject;mkYear=run.year;mkScopes=[run.scope];mkEnter0();}
   let head2;
   if(run)head2="正在计时 · "+run.year+" "+mockSubName(run.subject)
     +" · "+mockScName(run.subject,run.scope);
@@ -3183,54 +3320,133 @@ function renderMock(){
   if(!mkOpen)return;
   const mk=(tag,cls,txt)=>{const e=document.createElement(tag);
     if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e;};
-  const chip=(txt,fn,on)=>{const b=mk("button","mkchip"+(on?" on":""),txt);
-    b.onclick=fn;return b;};
-  const back=fn=>chip("返回",fn);
-  /* 得分那一行:任何时候都可以留空,不填照样能记 */
-  const scoreRow=()=>{
-    const r=mk("div","mkrow");
-    r.appendChild(mk("span","mklab","得分(可以不填)"));
-    const i=document.createElement("input");
-    i.className="mkin mksc";i.type="number";i.inputMode="numeric";
-    i.placeholder="分数";i.value=mkScoreIn;
-    i.onchange=()=>{mkScoreIn=i.value;};
-    r.appendChild(i);
-    return r;
-  };
-  if(run){
-    const p=mk("div","mkpanel");
-    p.appendChild(mk("div","mkt",run.year+" "+mockSubName(run.subject)+" · "
-      +mockScName(run.subject,run.scope)+" · 第 "
-      +mockAttempt(run.subject,run.year,run.scope)+" 刷"));
-    const line=mk("div","mkrow");
-    mkClkEl=mk("span","mkclk",mkClock(mockElapsed()));
-    line.appendChild(mkClkEl);
-    line.appendChild(chip("完成",()=>{
-      const r=mockRun();if(!r)return;
-      const mins=Math.max(1,Math.round(mockElapsed()/60000));
-      const rec=mockAdd(r.subject,r.year,r.scope,mins,mkScoreIn);
-      delete mockData().run;
-      if(mkTid){clearInterval(mkTid);mkTid=null;}
-      mkSaved(rec);
-    },1));
-    line.appendChild(chip("取消",()=>{
-      delete mockData().run;
-      if(mkTid){clearInterval(mkTid);mkTid=null;}
-      mkMsg="这次没有记下来。";
-      save();render();
-    }));
-    p.appendChild(line);
-    p.appendChild(scoreRow());
-    box.appendChild(p);
+  const chip=(txt,fn,on)=>{const b=mk("button","mkchip"+(on?" on":""),txt);b.onclick=fn;return b;};
+  const backRow=fn=>{const r=mk("div","mkrow");r.appendChild(chip("返回",fn));return r;};
+
+  /* ---- 第四屏:录入 ---- */
+  if(mkEntry&&mkSub&&mkYear&&mkScopes.length){
+    const sub=mkSub;
+    const order=MOCK_SUBJECTS[sub].sc.map(x=>x.k);
+    const list=mkScopes.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+    list.forEach(k=>{
+      const def=mockSc(sub,k);
+      const p=mk("div","mkpanel");
+      p.appendChild(mk("div","mkt",mkYear+" "+mockSubName(sub)+" · "+mockScName(sub,k)
+        +" · 第 "+mockAttempt(sub,mkYear,k)+" 刷"));
+      /* 用时:滑块 + 两侧 −5 / +5,拖不准就点 */
+      const tv=mk("div","mkval","用时 "+mkMinsIn[k]+" 分钟");
+      const sr=mk("div","mkrow mkslide-row");
+      const bump=d=>{
+        const v=Math.max(1,Math.min(300,(Number(mkMinsIn[k])||0)+d));
+        mkMinsIn[k]=v;renderMock();
+      };
+      sr.appendChild(chip("−5",()=>bump(-5)));
+      const sl=document.createElement("input");
+      sl.type="range";sl.className="mkslide";sl.min="1";sl.max="300";sl.step="1";
+      sl.value=String(mkMinsIn[k]);sl.setAttribute("data-k",k);
+      sl.setAttribute("aria-label",mockScName(sub,k)+"用时(分钟)");
+      sl.oninput=()=>{mkMinsIn[k]=Number(sl.value)||1;tv.textContent="用时 "+mkMinsIn[k]+" 分钟";};
+      sl.onchange=()=>{mkMinsIn[k]=Number(sl.value)||1;renderMock();};
+      sr.appendChild(sl);
+      sr.appendChild(chip("+5",()=>bump(5)));
+      p.appendChild(tv);
+      p.appendChild(sr);
+      const sug=mk("p","mksug","考场建议 "+def.mins+" 分钟");
+      if(mkMinsIn[k]>def.mins){
+        sug.textContent="考场建议 "+def.mins+" 分钟 · 这次多用了 "
+          +(mkMinsIn[k]-def.mins)+" 分钟,慢一点也是一次完整的练习。";
+      }
+      p.appendChild(sug);
+      /* 计时那条路留着:算完直接把实际分钟填进滑块,不越过保存自己存 */
+      const tr=mk("div","mkrow");
+      const rn=mockRun();
+      if(rn&&rn.scope===k&&rn.year===mkYear&&rn.subject===sub){
+        mkClkEl=mk("span","mkclk",mkClock(mockElapsed()));
+        tr.appendChild(mkClkEl);
+        tr.appendChild(chip("计时完成",()=>{
+          const m=Math.max(1,Math.round(mockElapsed()/60000));
+          mkMinsIn[k]=Math.min(300,m);
+          delete mockData().run;
+          if(mkTid){clearInterval(mkTid);mkTid=null;}
+          mkMsg="计时 "+m+" 分钟,已经填进用时里了。";
+          save();renderMock();
+        },1));
+        tr.appendChild(chip("取消计时",()=>{
+          delete mockData().run;
+          if(mkTid){clearInterval(mkTid);mkTid=null;}
+          save();renderMock();
+        }));
+        const over=Math.round(mockElapsed()/60000)-def.mins;
+        if(over>0)tr.appendChild(mk("span","mksug","比考场建议多 "+over+" 分钟了,不着急。"));
+      }else if(!rn){
+        tr.appendChild(chip("开始计时",()=>{
+          const b2=mockData();
+          b2.run={subject:sub,year:mkYear,scope:k,start:Date.now()};
+          save();renderMock();mkTimer();
+        }));
+      }
+      p.appendChild(tr);
+      /* 客观题:只点错了几题,分数系统算 */
+      if(def.q>0){
+        const w=mkWrongIn[k];
+        const sc=mockScoreOf(sub,k,w);
+        p.appendChild(mk("div","mkval",w==null?"错题数 · 还没记(可以不记)"
+          :("错 "+w+" 题 · "+sc+" / "+def.full+" 分")));
+        const wr=mk("div","mkrow"+(def.q<=8?" mkwrap":""));
+        const setW=v=>{mkWrongIn[k]=(mkWrongIn[k]===v)?null:v;renderMock();};
+        if(def.q<=8){
+          for(let i=0;i<=def.q;i++){
+            const b3=chip(String(i),()=>setW(i),w===i);
+            b3.className="mkchip w"+(w===i?" on":"");
+            wr.appendChild(b3);
+          }
+        }else{
+          const step=d=>{
+            const cur=(w==null)?0:w;
+            const v=Math.max(0,Math.min(def.q,cur+d));
+            mkWrongIn[k]=v;renderMock();
+          };
+          wr.appendChild(chip("−",()=>step(-1)));
+          wr.appendChild(mk("span","mknum",w==null?"—":String(w)));
+          wr.appendChild(chip("＋",()=>step(1)));
+          if(w!=null)wr.appendChild(chip("不记",()=>{mkWrongIn[k]=null;renderMock();}));
+        }
+        p.appendChild(wr);
+      }else{
+        /* 主观题:没有错题数这回事,只给一条分数滑块,拖过才算记 */
+        const v=mkScoreIn[k];
+        p.appendChild(mk("div","mkval",v==null?"分数 · 还没记(拖一下才记)"
+          :(v+" / "+def.full+" 分")));
+        const pr=mk("div","mkrow mkslide-row");
+        const psl=document.createElement("input");
+        psl.type="range";psl.className="mkslide sc";psl.min="0";psl.max=String(def.full);
+        psl.step="0.5";psl.value=String(v==null?0:v);psl.setAttribute("data-sc",k);
+        psl.setAttribute("aria-label",mockScName(sub,k)+"分数");
+        psl.oninput=()=>{mkScoreIn[k]=Number(psl.value);};
+        psl.onchange=()=>{mkScoreIn[k]=Number(psl.value);renderMock();};
+        pr.appendChild(psl);
+        p.appendChild(pr);
+        if(v!=null)p.appendChild((()=>{const r=mk("div","mkrow");
+          r.appendChild(chip("不记分数",()=>{mkScoreIn[k]=null;renderMock();}));return r;})());
+      }
+      box.appendChild(p);
+    });
+    const act=mk("div","mkrow");
+    act.appendChild(chip(mkScopes.length>1?("保存这 "+mkScopes.length+" 条"):"保存",
+      ()=>{if(!mockRun())mkSaveAll();},1));
+    act.appendChild(chip("返回",()=>{mkEntry=false;renderMock();}));
+    box.appendChild(act);
     if(mkMsg)box.appendChild(mk("p","mkmsg",mkMsg));
     return;
   }
+
+  /* ---- 第一屏:科目 ---- */
   if(!mkSub){
     const r=mk("div","mkrow");
     r.appendChild(mk("span","mklab","考哪一门"));
     Object.keys(MOCK_SUBJECTS).forEach(k=>{
       r.appendChild(chip(MOCK_SUBJECTS[k].n,()=>{
-        mkSub=k;mkYear=null;mkScope=null;mkMsg="";renderMock();}));
+        mkSub=k;mkYear=null;mkScopes=[];mkEntry=false;mkMsg="";renderMock();}));
     });
     box.appendChild(r);
     recs.slice(-3).reverse().forEach(x=>{
@@ -3238,58 +3454,45 @@ function renderMock(){
         +x.mins+" 分钟"+(x.score!=null?" · "+x.score+" 分":"")
         +" · "+x.d.slice(5).replace("-","/")));
     });
+  /* ---- 第二屏:年份 ---- */
   }else if(!mkYear){
     const r=mk("div","mkrow");
     r.appendChild(mk("span","mklab",mockSubName(mkSub)+" · 哪一年"));
-    MOCK_YEARS.forEach(y=>{
-      const b=chip(String(y),()=>{mkYear=y;mkScope=null;renderMock();});
+    mockYears(mkSub).forEach(y=>{
+      const b=chip(String(y),()=>{mkYear=y;mkScopes=[];renderMock();});
       b.className="mkchip y";
       r.appendChild(b);
     });
     box.appendChild(r);
-    // 返回单独一行:混在年份末行里会让那一行看起来宽窄不一
-    const rb=mk("div","mkrow");
-    rb.appendChild(back(()=>{mkSub=null;renderMock();}));
-    box.appendChild(rb);
-  }else if(!mkScope){
+    box.appendChild(backRow(()=>{mkSub=null;renderMock();}));
+  /* ---- 第三屏:题型,可多选 ---- */
+  }else{
     const r=mk("div","mkrow");
-    r.appendChild(mk("span","mklab",mkYear+" "+mockSubName(mkSub)+" · 哪一部分"));
+    r.appendChild(mk("span","mklab",mkYear+" "+mockSubName(mkSub)+" · 做了哪些(可以多选)"));
     MOCK_SUBJECTS[mkSub].sc.forEach(s=>{
-      r.appendChild(chip(s.n,()=>{mkScope=s.k;renderMock();}));
+      const on=mkScopes.indexOf(s.k)>=0;
+      r.appendChild(chip(s.n,()=>{
+        const i=mkScopes.indexOf(s.k);
+        if(i>=0)mkScopes.splice(i,1);else mkScopes.push(s.k);
+        renderMock();
+      },on));
     });
     box.appendChild(r);
-    const rb=mk("div","mkrow");
-    rb.appendChild(back(()=>{mkYear=null;renderMock();}));
-    box.appendChild(rb);
-  }else{
-    const p=mk("div","mkpanel");
-    p.appendChild(mk("div","mkt",mkYear+" "+mockSubName(mkSub)+" · "
-      +mockScName(mkSub,mkScope)+" · 第 "+mockAttempt(mkSub,mkYear,mkScope)+" 刷"));
-    const r1=mk("div","mkrow");
-    r1.appendChild(chip("开始计时",()=>{
-      const b=mockData();
-      b.run={subject:mkSub,year:mkYear,scope:mkScope,start:Date.now()};
-      save();renderMock();mkTimer();
-    },1));
-    r1.appendChild(back(()=>{mkScope=null;renderMock();}));
-    p.appendChild(r1);
-    const r2=mk("div","mkrow");
-    r2.appendChild(mk("span","mklab","或者直接填用时"));
-    const i=document.createElement("input");
-    i.className="mkin mkmin";i.type="number";i.inputMode="numeric";
-    i.placeholder="分钟";i.value=mkMinsIn;
-    i.onchange=()=>{mkMinsIn=i.value;};
-    r2.appendChild(i);
-    r2.appendChild(chip("记下来",()=>{
-      const v=Math.round(Number(mkMinsIn||i.value));
-      if(!(v>0))return;
-      mkSaved(mockAdd(mkSub,mkYear,mkScope,v,mkScoreIn));
-    }));
-    p.appendChild(r2);
-    p.appendChild(scoreRow());
-    box.appendChild(p);
+    const act=mk("div","mkrow");
+    if(mkScopes.length){
+      act.appendChild(chip("下一步 · "+mkScopes.length+" 项",()=>{mkEnter();},1));
+    }else{
+      act.appendChild(mk("span","mklab2","选一个或几个,再往下走"));
+    }
+    act.appendChild(chip("返回",()=>{mkYear=null;mkScopes=[];renderMock();}));
+    box.appendChild(act);
   }
   if(mkMsg)box.appendChild(mk("p","mkmsg",mkMsg));
+}
+/* 恢复计时用:进录入屏但不重画(renderMock 自己会往下走) */
+function mkEnter0(){
+  mkEntry=true;
+  mkScopes.forEach(k=>{if(mkMinsIn[k]==null)mkMinsIn[k]=mockDefMins(mkSub,k);});
 }
 
 /* 「最近是不是刚缓过来」——只用来决定标准线上方要不要多一句安抚文案,

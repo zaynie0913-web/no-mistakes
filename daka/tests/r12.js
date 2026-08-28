@@ -68,15 +68,29 @@ const openMk=e=>{
   e.doc._ids.mkToggle.onclick();
   return 1;
 };
-// 走完整路径记一条(计时版),返回点击次数
-function record(e,sub,year,scope,minutes){
+// v22:录入屏上的用时滑块。找到它、拖到某个值(走真实的 oninput/onchange)
+const slider=(e,k)=>{
+  const out=[];
+  const walk=n=>{if(n.tagName==='INPUT'&&n.getAttribute&&n.getAttribute('data-k')===k)out.push(n);
+    (n._children||[]).forEach(walk);};
+  (e.doc._ids.mkList._children||[]).forEach(walk);
+  return out[0]||null;
+};
+const dragMins=(e,k,v)=>{
+  const sl=slider(e,k);
+  if(!sl)throw new Error('找不到 '+k+' 的用时滑块');
+  sl.value=String(v);sl.oninput();sl.onchange();
+};
+// 走完整路径记一条,返回点击次数。
+// v22 起「保存」是独立一步,用时靠滑块(默认已经停在考场建议值上)。
+function record(e,sub,year,scope,minutes,scopeKey){
   let n=openMk(e);                 // 展开(已经开着就是 0 次)
   tap(e,sub);n++;
   tap(e,String(year));n++;
-  tap(e,scope);n++;
-  tap(e,'开始计时');n++;
-  e.st.off+=minutes*60*1000;       // 这段时间真的过去了
-  tap(e,'完成');n++;
+  tap(e,scope);n++;                // 题型现在是多选,点一下就是选中
+  tap(e,'下一步 · 1 项');n++;
+  if(minutes!=null&&scopeKey)dragMins(e,scopeKey,minutes);   // 拖滑块不算「点击」
+  tap(e,'保存');n++;
   return n;
 }
 const recs=e=>JSON.parse(e.R('JSON.stringify((D.mockExam&&D.mockExam.records)||[])'));
@@ -86,7 +100,7 @@ const recs=e=>JSON.parse(e.R('JSON.stringify((D.mockExam&&D.mockExam.records)||[
 console.log('【1 · 记一条真题】');
 T('英语一整套:年份题型都记住了',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'整套',180);
+  record(e,'英语一',2024,'整套',180,'full');
   const r=recs(e);
   eq(r.length,1,'没记进去');
   eq(r[0].subject,'en1');eq(r[0].year,2024);eq(r[0].scope,'full');
@@ -94,40 +108,42 @@ T('英语一整套:年份题型都记住了',()=>{
 });
 T('英语一阅读也能记',()=>{
   const e=fresh();
-  record(e,'英语一',2022,'阅读',67);
+  record(e,'英语一',2022,'阅读一',67,'read1');
   const r=recs(e);
-  eq(r[0].scope,'read');eq(r[0].mins,67);
+  eq(r[0].scope,'read1');eq(r[0].mins,67);   // v22:阅读拆四篇,阅读一的 key 是 read1
 });
-T('政治一整套',()=>{
+T('政治整套',()=>{
   const e=fresh();
-  record(e,'政治一',2023,'整套',150);
+  record(e,'政治',2023,'整套',150,'full');
   eq(recs(e)[0].subject,'pol1');eq(recs(e)[0].scope,'full');
 });
-T('政治一多选',()=>{
+T('政治多选',()=>{
   const e=fresh();
-  record(e,'政治一',2021,'多选',25);
+  record(e,'政治',2021,'多选',25,'multi');
   eq(recs(e)[0].scope,'multi');eq(recs(e)[0].mins,25);
 });
-T('英语一的题型是七项,政治一是四项',()=>{
+T('v22:英语一十项题型,政治四项',()=>{
   const e=fresh();
-  eq(e.R('MOCK_SUBJECTS.en1.sc.length'),7);
+  eq(e.R('MOCK_SUBJECTS.en1.sc.length'),10);
   eq(e.R('MOCK_SUBJECTS.pol1.sc.length'),4);
-  eq(e.R('JSON.stringify(MOCK_SUBJECTS.pol1.sc.map(x=>x.n))'),'["整套","单选","多选","分析题"]');
+  eq(e.R('JSON.stringify(MOCK_SUBJECTS.pol1.sc.map(x=>x.n))'),'["单选","多选","分析题","整套"]');
 });
-T('年份是 2015 到 2026',()=>{
+T('英语年份到 2010,政治到 2015',()=>{
   const e=fresh();
-  const y=JSON.parse(e.R('JSON.stringify(MOCK_YEARS)'));
-  eq(y.length,12);eq(y[0],2026);eq(y[11],2015);
+  const en=JSON.parse(e.R('JSON.stringify(mockYears("en1"))'));
+  eq(en.length,17);eq(en[0],2026);eq(en[16],2010);
+  const po=JSON.parse(e.R('JSON.stringify(mockYears("pol1"))'));
+  eq(po.length,12);eq(po[0],2026);eq(po[11],2015);
 });
 T('记完之后会告诉她记下了什么',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'翻译',20);
+  record(e,'英语一',2024,'翻译',20,'trans');
   ok(deepText(e).indexOf('记下了')>=0,'没有回执: '+deepText(e).slice(0,120));
   ok(deepText(e).indexOf('2024 英语一 · 翻译')>=0,'回执没说清是哪一份');
 });
 T('每条记录都带创建时间和唯一 id',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',30);
+  record(e,'英语一',2024,'阅读一',30,'read1');
   const r=recs(e)[0];
   ok(r.id&&String(r.id).length>3,'没有 id');
   ok(Number(r.ts)>0,'没有创建时间');
@@ -137,69 +153,70 @@ T('每条记录都带创建时间和唯一 id',()=>{
 console.log('【2 · 刷次系统自己算】');
 T('第一次是第 1 刷',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
   eq(recs(e)[0].attempt,1);
 });
 T('同年份同题型第二次自动变第 2 刷',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'英语一',2024,'阅读',35);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'英语一',2024,'阅读一',35,'read1');
   eq(recs(e)[1].attempt,2,'第二次没变 2 刷');
 });
 T('连着三刷,刷次是 1→2→3',()=>{
   const e=fresh();
-  record(e,'英语一',2020,'完形',15);
-  record(e,'英语一',2020,'完形',12);
-  record(e,'英语一',2020,'完形',10);
+  record(e,'英语一',2020,'完形',15,'cloze');
+  record(e,'英语一',2020,'完形',12,'cloze');
+  record(e,'英语一',2020,'完形',10,'cloze');
   eq(JSON.stringify(recs(e).map(r=>r.attempt)),'[1,2,3]','刷次不连续');
 });
 T('换了年份就重新从第 1 刷开始',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'英语一',2023,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'英语一',2023,'阅读一',40,'read1');
   eq(recs(e)[1].attempt,1,'不同年份不该接着数');
 });
 T('换了题型也重新从第 1 刷开始',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'英语一',2024,'翻译',20);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'英语一',2024,'翻译',20,'trans');
   eq(recs(e)[1].attempt,1,'不同题型不该接着数');
 });
 T('英语和政治各数各的',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'整套',180);
-  record(e,'政治一',2024,'整套',150);
+  record(e,'英语一',2024,'整套',180,'full');
+  record(e,'政治',2024,'整套',150,'full');
   eq(recs(e)[1].attempt,1,'两门课的刷次混在一起了');
 });
 T('刷次是保存那一刻固化的数字,不是每次重算的公式',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'英语一',2024,'阅读',30);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'英语一',2024,'阅读一',30,'read1');
   // 把第一条删掉,第二条仍然是「第 2 刷」—— 历史不因为后来的删改而变
   e.R('D.mockExam.records.splice(0,1);');
   eq(recs(e)[0].attempt,2,'刷次被重算了,历史不再不可变');
 });
 T('面板上把第几刷显示出来,不用她自己数',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读');
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读一');tap(e,'下一步 · 1 项');
   ok(deepText(e).indexOf('第 2 刷')>=0,'没显示刷次: '+deepText(e).slice(0,150));
 });
 
-console.log('【3 · 计时与手动填】');
-T('计时得出的分钟数按真实经过的时间算',()=>{
+console.log('【3 · 计时与滑块】');
+T('滑块拖到几分钟就记几分钟',()=>{
   const e=fresh('2026-08-20T14:00:00');
-  record(e,'英语一',2024,'阅读',67);
+  record(e,'英语一',2024,'阅读一',67,'read1');
   eq(recs(e)[0].mins,67,'计时算错');
 });
-T('政治真题计时同样准',()=>{
+T('政治的用时同样准',()=>{
   const e=fresh('2026-08-20T14:00:00');
-  record(e,'政治一',2019,'分析题',33);
+  record(e,'政治',2019,'分析题',33,'analysis');
   eq(recs(e)[0].mins,33);
 });
 {
   const e=fresh('2026-08-20T14:00:00');
-  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'整套');tap(e,'开始计时');
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'整套');
+  tap(e,'下一步 · 1 项');tap(e,'开始计时');
   const raw=e.store['bnu-tracker-v1'];
   const e2=boot('2026-08-20T14:20:00',raw);
   await e2.R('load()');
@@ -209,44 +226,36 @@ T('政治真题计时同样准',()=>{
     ok(e2.R('!!mockRun()'),'重开之后计时丢了');
     ok(e2.doc._ids.mkToggle.textContent.indexOf('正在计时')>=0,'条上没提示还在计时');
   });
-  T('重开之后按完成,记的是从头到现在的时间',()=>{
+  T('重开之后按「计时完成」,把实际时长填进滑块(不越过保存自己存)',()=>{
     e2.R('mkOpen=true;renderMock();');
-    tap(e2,'完成');
-    eq(recs(e2).length,1,'没记上');
+    tap(e2,'计时完成');
+    eq(recs(e2).length,0,'计时完成不该自己落盘');
+    eq(e2.R('mkMinsIn.full'),20,'实际时长没填进滑块');
+    tap(e2,'保存');
+    eq(recs(e2).length,1,'保存之后没记上');
     eq(recs(e2)[0].mins,20,'跨页面的计时算错了');
   });
 }
-T('手动填用时,不用计时也能记',()=>{
+T('不拖滑块也能直接保存 —— 用时就是考场建议值',()=>{
   const e=fresh();
-  openMk(e);tap(e,'英语一');tap(e,'2018');tap(e,'新题型');
-  const inp=inputs(e).find(x=>x.classList.contains('mkmin'));
-  ok(inp,'没有填用时的输入框');
-  inp.value='18';inp.onchange();
-  tap(e,'记下来');
+  openMk(e);tap(e,'英语一');tap(e,'2018');tap(e,'段落匹配');tap(e,'下一步 · 1 项');
+  tap(e,'保存');
   eq(recs(e).length,1,'没记进去');
-  eq(recs(e)[0].mins,18);
+  eq(recs(e)[0].mins,15,'默认值不是段落匹配的建议 15 分钟');
 });
-T('用时填空或填 0 时不会记一条空记录',()=>{
-  const e=fresh();
-  openMk(e);tap(e,'英语一');tap(e,'2018');tap(e,'新题型');
-  tap(e,'记下来');
-  eq(recs(e).length,0,'空的也记进去了');
-  const inp=inputs(e).find(x=>x.classList.contains('mkmin'));
-  inp.value='0';inp.onchange();tap(e,'记下来');
-  eq(recs(e).length,0,'0 分钟也记进去了');
-});
-T('取消:计时中放弃,什么都不留下',()=>{
+T('取消计时:什么都不留下,也不落一条记录',()=>{
   const e=fresh('2026-08-20T14:00:00');
-  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读');tap(e,'开始计时');
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读一');
+  tap(e,'下一步 · 1 项');tap(e,'开始计时');
   e.st.off+=10*60*1000;
-  tap(e,'取消');
+  tap(e,'取消计时');
   eq(recs(e).length,0,'取消了还记了一条');
   eq(e.R('!!mockRun()'),false,'计时没停');
-  ok(deepText(e).indexOf('没有记下来')>=0,'没说清这次没记');
 });
 T('计时忘了结束、隔了一整天才回来,不会记成十几个小时',()=>{
   const e=fresh('2026-08-20T14:00:00');
-  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'整套');tap(e,'开始计时');
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'整套');
+  tap(e,'下一步 · 1 项');tap(e,'开始计时');
   e.st.off+=20*3600*1000;
   e.R('renderMock();');
   eq(e.R('!!mockRun()'),false,'超时的计时还留着');
@@ -255,46 +264,53 @@ T('计时忘了结束、隔了一整天才回来,不会记成十几个小时',()
 });
 T('得分可填可不填 —— 不填照样能记',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
   eq(recs(e)[0].score,null,'不填时不该编一个分数');
+  eq(recs(e)[0].wrong,null,'错题数也不该编一个');
 });
-T('填了得分就存下来',()=>{
+T('主观题拖了分数就存下来',()=>{
   const e=fresh();
-  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读');
-  const sc=inputs(e).find(x=>x.classList.contains('mksc'));
-  ok(sc,'没有得分输入框');
-  sc.value='34';sc.onchange();
-  const mi=inputs(e).find(x=>x.classList.contains('mkmin'));
-  mi.value='40';mi.onchange();
-  tap(e,'记下来');
-  eq(recs(e)[0].score,34,'得分没存住');
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'大作文');tap(e,'下一步 · 1 项');
+  const sc=(()=>{const out=[];const walk=n=>{
+    if(n.tagName==='INPUT'&&n.getAttribute&&n.getAttribute('data-sc')==='big')out.push(n);
+    (n._children||[]).forEach(walk);};
+    (e.doc._ids.mkList._children||[]).forEach(walk);return out[0];})();
+  ok(sc,'没有分数滑块');
+  sc.value='14.5';sc.oninput();sc.onchange();
+  tap(e,'保存');
+  eq(recs(e)[0].score,14.5,'分数没存住');
 });
 T('得分是 0 分也如实存,不当成没填',()=>{
   const e=fresh();
-  e.R('mockAdd("en1",2024,"read",30,"0");');
+  e.R('mockAdd("en1",2024,"trans",30,"0");');
   eq(recs(e)[0].score,0,'0 分被吞了');
 });
 
 console.log('【4 · 归属哪一天:走 DAYCUT，不用 new Date】');
 T('凌晨 3:30 记的,算前一天',()=>{
   const e=fresh('2026-08-20T03:30:00');
-  record(e,'英语一',2024,'阅读',10);   // 3:40 结束,还没过 4 点
+  record(e,'英语一',2024,'阅读一',10,'read1');   // 3:40 结束,还没过 4 点
   eq(recs(e)[0].d,'2026-08-19','凌晨被记成了新的一天');
 });
-T('3:55 开始、4:20 结束的一节,归到按下完成的那一天',()=>{
+T('3:55 开始计时、4:20 保存的一节,归到按下保存的那一天',()=>{
   // 和番茄一致:所有记录以「确认的那一刻」归属学习日,不按开始时刻算
   const e=fresh('2026-08-20T03:55:00');
-  record(e,'英语一',2024,'阅读',25);
+  openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读一');tap(e,'下一步 · 1 项');
+  tap(e,'开始计时');
+  e.st.off+=25*60*1000;              // 真的过了 25 分钟,现在是 4:20
+  tap(e,'计时完成');
+  tap(e,'保存');
   eq(recs(e)[0].d,'2026-08-20','跨过 4 点的一节归错了天');
+  eq(recs(e)[0].mins,25,'计时时长没填进去');
 });
 T('凌晨 4:30 记的,算新的一天',()=>{
   const e=fresh('2026-08-20T04:30:00');
-  record(e,'英语一',2024,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
   eq(recs(e)[0].d,'2026-08-20','过了 4 点还算前一天');
 });
 T('日期在保存那一刻固化在记录上,不靠时间戳事后反推',()=>{
   const e=fresh('2026-08-20T23:30:00');
-  record(e,'英语一',2024,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
   const r=recs(e)[0];
   eq(r.d,'2026-08-20');
   ok(/^\d{4}-\d{2}-\d{2}$/.test(r.d),'存的不是学习日键');
@@ -302,9 +318,9 @@ T('日期在保存那一刻固化在记录上,不靠时间戳事后反推',()=>{
 });
 T('跨过 4 点之后再记,进的是新的一天',()=>{
   const e=fresh('2026-08-20T03:00:00');
-  record(e,'英语一',2024,'阅读',10);
+  record(e,'英语一',2024,'阅读一',10,'read1');
   e.st.off+=2*3600*1000;          // 推进到 05:00
-  record(e,'英语一',2024,'翻译',10);
+  record(e,'英语一',2024,'翻译',10,'trans');
   const r=recs(e);
   eq(r[0].d,'2026-08-19');
   eq(r[1].d,'2026-08-20','跨了 4 点还写在旧的一天');
@@ -313,12 +329,12 @@ T('跨过 4 点之后再记,进的是新的一天',()=>{
 console.log('【5 · 并入现有统计,不另起一套】');
 T('今日时长把真题算进去了',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',67);
+  record(e,'英语一',2024,'阅读一',67,'read1');
   eq(e.R('todayMins(TODAY)'),67,'真题时长没进今日时长');
 });
 T('真题时长只被算一次',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',67);
+  record(e,'英语一',2024,'阅读一',67,'read1');
   eq(e.R('todayMins(TODAY)'),67,'第一次就翻倍了');
   eq(e.R('todayMins(TODAY)'),67,'多算了一次');
   e.R('render();renderTimeStat();');
@@ -330,7 +346,7 @@ T('真题和最低目标的时长相加,互不吞没',()=>{
   e.R('const d=day(TODAY);const t=minAll()[0];d.min[t.k]=1;');
   const base=e.R('todayMins(TODAY)');
   ok(base>0,'底子就是 0,这条测不出东西');
-  record(e,'英语一',2024,'翻译',20);
+  record(e,'英语一',2024,'翻译',20,'trans');
   eq(e.R('todayMins(TODAY)'),base+20,'两边没有相加');
 });
 T('没有真题记录时,今日时长和从前一模一样',()=>{
@@ -377,13 +393,13 @@ T('本周学习时长把真题带进去了',()=>{
 });
 T('按科目排行里出现真题,且不按年份题型拆成一堆',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'英语一',2023,'翻译',20);
-  record(e,'政治一',2024,'多选',15);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'英语一',2023,'翻译',20,'trans');
+  record(e,'政治',2024,'多选',15,'multi');
   e.R('render();');
   const rows=e.doc._ids.statList._children.map(r=>r._html||'').join('|');
   ok(rows.indexOf('英语一真题')>=0,'排行里没有英语真题');
-  ok(rows.indexOf('政治一真题')>=0,'排行里没有政治真题');
+  ok(rows.indexOf('政治真题')>=0,'排行里没有政治真题');
   eq((rows.match(/英语一真题/g)||[]).length,1,'英语真题被拆成了多行');
 });
 T('这四处用的都是同一份记录,没有第二套统计函数',()=>{
@@ -404,15 +420,15 @@ T('统计函数不会顺手改数据',()=>{
 console.log('【6 · 存得住 · 关掉再打开还在】');
 T('记完就写进存档',()=>{
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
+  record(e,'英语一',2024,'阅读一',40,'read1');
   const raw=JSON.parse(e.store['bnu-tracker-v1']);
   eq(raw.mockExam.records.length,1,'没落盘');
   eq(raw.mockExam.records[0].mins,40);
 });
 {
   const e=fresh();
-  record(e,'英语一',2024,'阅读',40);
-  record(e,'政治一',2023,'多选',15);
+  record(e,'英语一',2024,'阅读一',40,'read1');
+  record(e,'政治',2023,'多选',15,'multi');
   const e2=boot(undefined,e.store['bnu-tracker-v1']);
   await e2.R('load()');
   e2.R('render();');
@@ -420,12 +436,12 @@ T('记完就写进存档',()=>{
     eq(e2.R('D.mockExam.records.length'),2,'重开之后记录少了');
     eq(e2.R('D.mockExam.records[0].mins'),40);
     // v21.1:折叠条摘要改成「上次:哪一份 · 几天前」,不再报总次数
-    ok(e2.doc._ids.mkToggle.textContent.indexOf('上次:2023 政治一 · 多选')>=0,
+    ok(e2.doc._ids.mkToggle.textContent.indexOf('上次:2023 政治 · 多选')>=0,
       '条上没有摘要: '+e2.doc._ids.mkToggle.textContent);
     ok(e2.doc._ids.mkToggle.textContent.indexOf('今天')>=0,'摘要没有几天前');
   });
   T('重开之后刷次接着往下数',()=>{
-    eq(e2.R('mockAttempt("en1",2024,"read")'),2,'刷次没接上');
+    eq(e2.R('mockAttempt("en1",2024,"read1")'),2,'刷次没接上');
   });
 }
 {
@@ -507,8 +523,8 @@ const doImport=(e,text)=>{
 
   await (async()=>{
     const e=fresh();
-    record(e,'英语一',2024,'阅读',40);
-    record(e,'政治一',2023,'多选',15);
+    record(e,'英语一',2024,'阅读一',40,'read1');
+    record(e,'政治',2023,'多选',15,'multi');
     const dump=e.R('JSON.stringify(D)');
     await tick();
     T('导出的快照里带着真题记录',()=>{
@@ -539,7 +555,7 @@ const doImport=(e,text)=>{
 
   await (async()=>{
     const e=fresh();
-    record(e,'英语一',2024,'阅读',40);
+    record(e,'英语一',2024,'阅读一',40,'read1');
     await tick();
     doImport(e,JSON.stringify({days:{},mockExam:{records:[
       {id:"new1",subject:"pol1",year:2022,scope:"single",attempt:1,d:"2026-08-10",mins:20}]}}));
@@ -595,29 +611,34 @@ const doImport=(e,text)=>{
   console.log('【9 · 录入负担与文案】');
   T('记一篇阅读:从打开到记完是 6 次点击',()=>{
     const e=fresh('2026-08-20T22:00:00');
-    const n=record(e,'英语一',2024,'阅读',67);
+    const n=record(e,'英语一',2024,'阅读一',67,'read1');
     eq(n,6,'点击次数变了');
     eq(recs(e).length,1,'点完了却没记上');
   });
-  T('全程没有任何非填不可的东西',()=>{
+  T('全程没有任何非填不可的东西,而且一个字都不用打',()=>{
     const e=fresh();
-    openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读');
-    // 面板上只有「用时」和「得分」两个输入框,都可以空着走计时那条路
+    openMk(e);tap(e,'英语一');tap(e,'2024');tap(e,'阅读一');tap(e,'下一步 · 1 项');
     const ins=inputs(e);
-    eq(ins.length,2,'面板上的输入框数量变了: '+ins.map(x=>x.className).join(','));
+    // v22:录入屏上只剩滑块,没有任何要打字的控件
+    eq(ins.filter(x=>x.type==='text'||x.type==='number').length,0,
+      '还有要打字的输入框: '+ins.map(x=>x.type+'.'+x.className).join(','));
+    ok(ins.every(x=>x.type==='range'),'出现了非滑块的输入控件');
     ok(ins.every(x=>!x.required),'出现了必填项');
     const txt=deepText(e);
     ['难度','错因','备注'].forEach(w=>ok(txt.indexOf(w)<0,'冒出了要填的东西: '+w));
-    tap(e,'开始计时');tap(e,'完成');
+    tap(e,'保存');
     eq(recs(e).length,1,'什么都不填就记不下来');
   });
   T('每一层都能退回上一层',()=>{
     const e=fresh();
     openMk(e);tap(e,'英语一');
     tap(e,'返回');
-    ok(chips(e).some(c=>c._text==='政治一'),'退不回选科目那层');
+    ok(chips(e).some(c=>c._text==='政治'),'退不回选科目那层');
     tap(e,'英语一');tap(e,'2024');tap(e,'返回');
     ok(chips(e).some(c=>c._text==='2023'),'退不回选年份那层');
+    tap(e,'2024');tap(e,'阅读一');tap(e,'下一步 · 1 项');
+    tap(e,'返回');
+    ok(chips(e).some(c=>c._text==='段落匹配'),'退不回选题型那层');
   });
   T('收起时只有一行,列表是藏起来的',()=>{
     const e=fresh();
@@ -644,16 +665,18 @@ const doImport=(e,text)=>{
     const bad=seg.match(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu);
     eq(bad?bad.join(''):'','','出现 emoji: '+(bad||[]).join(''));
   });
-  T('这一阶段不碰难度,一个字都没有',()=>{
+  T('不碰难度库,也没有任何按历史推算的建议',()=>{
     const seg=js.slice(js.indexOf('const MOCK_SUBJECTS='),js.indexOf('const KY_NODES='))
       +js.slice(js.indexOf('function mockEmpty'),js.indexOf('function stdState'));
-    ['difficultySnapshot','难度','平均分','建议','预测'].forEach(w=>
+    // v22 有「考场建议 N 分钟」,那是一张固定常量表;禁的是按她的历史算出来的那种建议
+    ['difficultySnapshot','难度','平均分','智能','推荐','预测','根据你'].forEach(w=>
       ok(seg.indexOf(w)<0,'提前动了后面阶段的东西: '+w));
+    ok(seg.indexOf('考场建议')>=0,'考场建议那张固定表不见了');
     const e=fresh();
-    record(e,'英语一',2024,'阅读',40);
+    record(e,'英语一',2024,'阅读一',40,'read1');
     const r=recs(e)[0];
     eq(Object.keys(r).sort().join(','),
-      'attempt,d,done,id,mins,scope,score,subject,ts,year','记录字段和约定不一致');
+      'attempt,d,done,id,mins,scope,score,subject,ts,wrong,year','记录字段和约定不一致');
   });
   T('没有引入网络请求',()=>{
     const seg=js.slice(js.indexOf('function mockEmpty'),js.indexOf('function stdState'));
@@ -664,7 +687,7 @@ const doImport=(e,text)=>{
   console.log('【10 · 不回归】');
   T('四栏一起画不抛错',()=>{
     const e=fresh();
-    record(e,'英语一',2024,'阅读',40);
+    record(e,'英语一',2024,'阅读一',40,'read1');
     e.R(`day(TODAY).drink={tea:1};setDtl(TODAY,"tea",0,"s","半糖");
       day(TODAY).std={p_dic:1};
       day(TODAY).feel={b:["手脚冰凉"],m:["伤春悲秋"],note:""};
@@ -675,14 +698,14 @@ const doImport=(e,text)=>{
   });
   T('三档结构和达标口径没被真题影响',()=>{
     const e=fresh();
-    record(e,'英语一',2024,'整套',180);
+    record(e,'英语一',2024,'整套',180,'full');
     eq(e.R('stateOf(TODAY)'),'none','做了真题就被算成达标了');
     e.R('const d=day(TODAY);minAll().forEach(x=>{d.min[x.k]=1;});');
     eq(e.R('stateOf(TODAY)'),'full','达标判定被真题改动了');
   });
   T('轮换指针没受影响',()=>{
     const e=fresh();
-    record(e,'英语一',2024,'阅读',40);
+    record(e,'英语一',2024,'阅读一',40,'read1');
     ok(['gh','xh'].indexOf(e.R('D.rotGX'))>=0,'轮换指针被弄坏了');
     e.R('refreshDay();refreshDay();');
     ok(['gh','xh'].indexOf(e.R('D.rotGX'))>=0);

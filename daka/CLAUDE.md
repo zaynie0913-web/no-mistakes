@@ -7,7 +7,7 @@
 ## 这是什么
 
 一位跨专业考研学生(报考北师大文学院中国语言文学,2027 考研 / 2026 年 12 月初试)自用的
-**单文件 HTML 打卡工具**。当前 `dakav21_1.html`,约 264 KB,HTML + CSS + JS 全在一个文件。
+**单文件 HTML 打卡工具**。当前 `dakav22.html`,约 274 KB,HTML + CSS + JS 全在一个文件。
 
 运行环境:**安卓「夸克浏览器」为主**(文件管理器打开本地文件 + 桌面快捷方式),iPad 为辅。
 **不是 Chrome —— 所有真机判断按夸克来。** 夸克是 Blink 内核,但外壳行为和 Chrome 有差别,
@@ -187,6 +187,31 @@ D.mockExam.run        正在走的计时 {subject,year,scope,start},超过 6 小
 `mockFix()` 是 `load()` 和导入**共用**的兜底函数(不是抄两遍,是只有一份规则);
 导入按 record 的 `id` 去重,同一份备份导两次不会变成两条。
 
+### v22:真题训练 Stage 2(本轮新增,重点读)
+
+**这一版的主体是「一个字都不用打」。** 用户有 ADHD,障碍是「开始」,要她手填用时和分数
+就等于不会填。所以录入只剩两种动作:**点**和**滑**。
+`renderMock()` 的录入屏里**不允许出现任何 `type="text"` / `type="number"`**,
+r13 有测试直接盯着这条(源码层 + 渲染层各一条)。
+
+**题型清单**(`MOCK_SUBJECTS[sub].sc`):每一项自带四个常量 —— `q` 题目数、`per` 每题分值、
+`full` 满分、`mins` 考场建议用时。**有 `q` 就是客观题**(只点错了几题,分数由
+`mockScoreOf()` 算),没有 `q` 就是主观题(只拖分数滑块)。这两张表是硬编码常量,
+**不是按她的历史推算的**,不要做成自适应。
+
+**历史不迁移**:v21 存的 `scope:"read"`(阅读)和 `"new"`(新题型)不在可选清单里,
+但留在 `MOCK_SUBJECTS[sub].old` 里 —— `mockValid()` 认它们(不认就会被当成脏数据丢掉),
+`mockScName()` 显示它们的老中文名。新记录只能选新清单。**不要写迁移脚本去改写旧记录。**
+
+**多选**:`mkScopes` 是数组,选几个题型就在录入屏出几组,保存时生成几条独立记录,
+每条各自算刷次、各自存自己那一格的用时。**不合成一条,也不把总用时摊派下去** —— 摊派是造假。
+
+**计时**:`D.mockExam.run` 记的是「哪一组在计时」。计时完成**只把分钟数填进那一组的滑块**,
+不自己落盘,由「保存」统一写入 —— 这样计时和滑块两条路共存,不会各存各的。
+
+**顶部快捷栏**(`#qnav`):今天 tab 有 3200px 高,三档任务区就占 2300px,真题入口不可能进首屏。
+快捷栏只做 `scrollIntoView` 导航,**不折叠、不隐藏、不改任何现有结构**。
+
 ### 数据结构速查
 
 ```
@@ -212,6 +237,9 @@ D.teaRef / D.kyFix / D.lastExport
 D.reviews / D.dictation
 D.rotGX / D.rotGXDate       v20 轮换指针
 D.mockExam                  v21 真题训练(records / metadata / run)
+  record: {id,subject,year,scope,attempt,d,mins,wrong,score,done,ts}
+          wrong 是 v22 加的错题数(可为 null);客观题的 score 一律由 wrong 算,
+          不接受外面传进来的分数,免得两个来源打架
 ```
 
 **导入需合并的顶层字段**:`minList` `medList` `customs` `subjects` `plusOrder` `plusOff`
@@ -227,26 +255,26 @@ days 内部字段随 days 走,但**必须在 `load` 和 `import` 两处都做兜
 
 ## 测试
 
-十一套,共 **617 项,当前全过**。
+十二套,共 **675 项,当前全过**。
 
 ```bash
 cd tests
-for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js r12.js; do
+for f in t1.js qcheck.js r6.js r5.js tagcheck.js r7.js r8.js r9.js r10.js r11.js r12.js r13.js; do
   echo -n "$f: "; node $f 2>&1 | tail -1; done
 ```
 
-期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 76**,全部 0 失败。
+期望:**208 / 30 / 45 / 34 / 18 / 54 / 54 / 37 / 27 / 34 / 75 / 59**,全部 0 失败。
 
 改了 html 之后,先抽 JS 查语法:
 
 ```bash
 python3 -c "
 import re,io
-s=io.open('dakav21_1.html',encoding='utf-8').read()
+s=io.open('dakav22.html',encoding='utf-8').read()
 io.open('tests/app.js','w',encoding='utf-8').write(re.findall(r'<script[^>]*>(.*?)</script>',s,re.S)[0])
 "
 node --check tests/app.js
-cp dakav21_1.html tests/app.html   # 测试脚本从当前目录读 app.html
+cp dakav22.html tests/app.html   # 测试脚本从当前目录读 app.html
 ```
 
 ### 测试失败必须先分类再处理
