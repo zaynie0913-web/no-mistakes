@@ -84,11 +84,15 @@ T('英语年份到 2010,政治到 2015',()=>{
   const po=JSON.parse(e.R('JSON.stringify(mockYears("pol1"))'));
   eq(po[0],2026);eq(po[po.length-1],2015);eq(po.length,12);
 });
-T('年份屏真的把 2010 画出来了',()=>{
+T('年份屏默认露 12 个(2015–2026),2010 收在「更早」里',()=>{
   const e=fresh();
   openMk(e);tap(e,'英语一');
-  ok(has(e,'2010'),'没有 2010');
-  ok(has(e,'2026'),'没有 2026');
+  ok(has(e,'2026')&&has(e,'2015'),'默认这 12 个没画出来');
+  ok(!has(e,'2010'),'更早的年份不该一开始就铺开');
+  ok(has(e,'更早(2010–2014)'),'没有「更早」入口');
+  tap(e,'更早(2010–2014)');
+  ok(has(e,'2010')&&has(e,'2014'),'点开之后更早的年份没出来');
+  ok(has(e,'2026'),'点开更早之后前面的年份不该消失');
 });
 T('政治的年份屏没有 2010',()=>{
   const e=fresh();
@@ -523,7 +527,174 @@ T('导入不会把别的设备的计时搬过来',()=>{
   ok(seg.indexOf('mbox.run=incoming.box.run')<0,'导入还在搬别的设备的计时');
 });
 
-console.log('【11 · 不回归】');
+console.log('【11 · 录入草稿(v22.2)】');
+{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形','阅读一']);
+  dragMins(e,'cloze',18);tap(e,'2');            // 阅读一错 2 题
+  const raw=e.store['bnu-tracker-v1'];
+  const e2=boot(undefined,raw);                 // 相当于切 App 回来、页面被回收后重开
+  await e2.R('load()');
+  e2.R('render();');
+  T('切 App 回来,选好的题型和点好的错题数都还在',()=>{
+    ok(raw&&raw.indexOf('draft')>=0,'草稿没落盘');
+    eq(e2.R('JSON.stringify(mkScopes)'),'["cloze","read1"]','选好的题型没了');
+    eq(e2.R('mkMinsIn.cloze'),18,'拖好的用时没了');
+    eq(e2.R('mkWrongIn.read1'),2,'点好的错题数没了');
+    eq(e2.R('mkEntry'),true,'没回到录入那一屏');
+  });
+  T('正在录的东西会自动展开,不用她再点一次',()=>{
+    eq(e2.R('mkOpen'),true,'回来还是收起的,等于要她重新启动一次');
+  });
+  T('恢复之后接着保存,存的就是草稿里的值',()=>{
+    tap(e2,'保存这 2 条');
+    const r=recs(e2);
+    eq(r.length,2,'没存上');
+    eq(r.find(x=>x.scope==='cloze').mins,18,'用时不是草稿里的');
+    eq(r.find(x=>x.scope==='read1').wrong,2,'错题数不是草稿里的');
+    eq(r.find(x=>x.scope==='read1').score,6,'分数没跟着错题数算');
+  });
+}
+T('草稿不是记录:不进统计、不进刷次',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形']);
+  dragMins(e,'cloze',30);
+  eq(recs(e).length,0,'草稿变成记录了');
+  eq(e.R('todayMins(TODAY)'),0,'草稿进了当日时长');
+  eq(e.R('mockAttempt("en1",2024,"cloze")'),1,'草稿把刷次顶上去了');
+});
+T('保存成功后草稿清掉',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);
+  tap(e,'保存');
+  eq(e.R('!!(D.mockExam&&D.mockExam.draft)'),false,'保存了草稿还在');
+});
+T('主动退出录入屏,草稿一起清掉',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);
+  tap(e,'2');
+  tap(e,'返回');
+  eq(e.R('!!(D.mockExam&&D.mockExam.draft&&D.mockExam.draft.entry)'),false,'退出录入屏草稿还在');
+  eq(e.R('JSON.stringify(mkWrongIn)'),'{}','填过的错题数没清掉');
+});
+T('草稿读不懂就丢掉,不会把模块卡死',()=>{
+  const e=fresh();
+  ['{"sub":"不存在的科目"}','{"sub":"en1","scopes":"不是数组"}',
+   '{"sub":"en1","scopes":["不存在的题型"]}','{"sub":"en1","scopes":[],"mins":"不是对象"}']
+   .forEach(bad=>{
+     eq(e.R('mockDraftOk('+bad+')'),false,'这种草稿该被判为读不懂: '+bad);
+   });
+  eq(e.R('mockDraftOk({sub:"en1",year:2024,scopes:["read1"],mins:{},wrong:{},score:{}})'),true,
+    '正常草稿被误判了');
+});
+T('草稿不进导出',()=>{
+  const i=js.indexOf('const snap=JSON.parse(JSON.stringify(D));');
+  ok(i>0,'导出没有做快照剔除');
+  const seg=js.slice(i,i+260);
+  ok(seg.indexOf('delete snap.mockExam.draft')>=0,'导出还带着草稿');
+  ok(seg.indexOf('delete snap.mockExam.undo')>=0,'导出还带着撤销指针');
+});
+T('恢复草稿不弹确认框',()=>{
+  const seg=js.slice(js.indexOf('function mkRestoreDraft'),js.indexOf('function mkUndoAvail'));
+  ok(seg.indexOf('confirm(')<0,'恢复时弹了确认框');
+  ok(seg.indexOf('prompt(')<0,'恢复时问了问题');
+});
+T('草稿只在打开页面时恢复一次,不会把「返回」吃掉',()=>{
+  const e=fresh();
+  openMk(e);tap(e,'英语一');
+  tap(e,'返回');
+  ok(has(e,'政治'),'点返回又被草稿推回去了');
+});
+
+console.log('【12 · 撤销刚才那一批(v22.2)】');
+T('保存后出现撤销入口,写明是哪几条',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形','阅读一']);
+  tap(e,'保存这 2 条');
+  ok(has(e,'撤销刚才那 2 条'),'没有撤销入口');
+  ok(deepText(e).indexOf('完形、阅读一')>=0,'没写清是哪几条');
+});
+T('撤销 = 整批删掉,不留痕迹',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形','阅读一']);
+  tap(e,'保存这 2 条');
+  tap(e,'撤销刚才那 2 条');
+  eq(recs(e).length,0,'没删干净');
+  eq(e.R('todayMins(TODAY)'),0,'时长还留着');
+  eq(e.R('!!(D.mockExam&&D.mockExam.undo)'),false,'撤销指针没清');
+  ok(!has(e,'撤销刚才那 2 条'),'撤销入口还挂着');
+});
+T('只撤最新那一批,更早的记录一条不动',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');
+  toEntry(e,'英语一',2024,['阅读二','阅读三']);tap(e,'保存这 2 条');
+  tap(e,'撤销刚才那 2 条');
+  const r=recs(e);
+  eq(r.length,1,'把更早的也撤了');
+  eq(r[0].scope,'read1');
+});
+T('又存了新的一批,旧的撤销入口就消失',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');
+  const first=e.R('D.mockExam.undo.bid');
+  toEntry(e,'英语一',2024,['阅读二']);tap(e,'保存');
+  ok(e.R('D.mockExam.undo.bid')!==first,'撤销指针没跟着最新那一批走');
+  tap(e,'撤销刚才那 1 条');
+  const r=recs(e);
+  eq(r.length,1,'撤错批了');
+  eq(r[0].scope,'read1','撤的不是最新那一批');
+});
+T('跨了学习日,撤销入口自己消失',()=>{
+  const e=fresh('2026-08-20T20:00:00');
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');
+  ok(!!e.R('mkUndoAvail()'),'当天该能撤');
+  e.st.off+=10*3600*1000;          // 推到第二天早上 6 点
+  e.R('refreshDay();renderMock();');
+  eq(e.R('!!mkUndoAvail()'),false,'跨了学习日还能撤');
+  eq(recs(e).length,1,'记录不该被跨天顺手删掉');
+});
+T('手动点「不用」也能让入口消失,记录不动',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');
+  tap(e,'不用');
+  eq(recs(e).length,1,'点「不用」把记录删了');
+  ok(!has(e,'不用'),'入口没消失');
+});
+T('旧记录没有批次号,永远不出现撤销入口',()=>{
+  const e=fresh();
+  e.R(`D.mockExam={version:1,metadata:{},records:[
+    {id:"o1",subject:"en1",year:2021,scope:"read",attempt:1,d:TODAY,mins:70,
+     wrong:null,score:null,done:true,ts:1}]};render();`);
+  eq(e.R('!!mkUndoAvail()'),false,'老记录冒出了撤销入口');
+  ok(!deepText(e).indexOf('撤销')>=0===false||deepText(e).indexOf('撤销')<0,'界面上出现了撤销');
+});
+T('撤销不重算刷次 —— 撤完出现跳号是对的',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');   // 第 1 刷
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');   // 第 2 刷
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');   // 第 3 刷
+  e.R('D.mockExam.undo={bid:D.mockExam.records[1].bid,d:TODAY,n:1,label:"阅读一"};');
+  e.R('mkDoUndo();');
+  const a=recs(e).map(r=>r.attempt);
+  eq(JSON.stringify(a),'[1,3]','刷次被重算了,应该保留 1、3 的跳号');
+});
+T('同一批的几条写的是同一个批次号',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['完形','阅读一','阅读二']);
+  tap(e,'保存这 3 条');
+  const bs=recs(e).map(r=>r.bid);
+  eq(new Set(bs).size,1,'同一批的批次号不一致');
+  ok(bs[0]&&bs[0].length>3,'没有批次号');
+});
+T('撤销指针不进导出',()=>{
+  const e=fresh();
+  toEntry(e,'英语一',2024,['阅读一']);tap(e,'保存');
+  ok(!!e.R('D.mockExam.undo'),'本机该有撤销指针');
+  // 导出走的是剔除过的快照,见上一组的静态断言
+  ok(js.indexOf('delete snap.mockExam.undo')>=0,'导出没剔除撤销指针');
+});
+
+console.log('【13 · 不回归】');
 T('达标口径没被真题影响',()=>{
   const e=fresh();
   toEntry(e,'英语一',2024,['整套']);tap(e,'保存');

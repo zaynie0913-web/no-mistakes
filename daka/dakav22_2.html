@@ -755,6 +755,9 @@ body.dark .mkchip.on{background:transparent}
   border-bottom:1px solid var(--line)}
 .mkhist:last-of-type{border-bottom:none}
 .mkmsg{font-size:var(--fz-info);color:var(--shiqing);font-family:var(--serif);margin:9px 0 0}
+.mkrow.mkundo{padding:9px 11px;background:var(--zhi-2);border:1px solid var(--line);
+  border-radius:8px;margin-bottom:10px}
+body.dark .mkrow.mkundo{background:var(--card-d)}
 /* v22:录入全部改成点和滑,这一区没有任何要打字的控件 */
 .mkval{font-family:var(--serif);font-size:var(--fz-key);color:var(--mo);
   line-height:1.6;margin:2px 0 6px}
@@ -793,7 +796,7 @@ body.dark .qnav button{background:var(--card-d)}
 <div class="wrap">
 
 <header>
-  <h1>每日打卡 <span class="ver" id="verTag">v22.1 · 08/27</span></h1>
+  <h1>每日打卡 <span class="ver" id="verTag">v22.2 · 08/28</span></h1>
   <div class="today" id="todayLine"></div>
   <div class="sbadge" id="saveState">检查存储…</div>
 </header>
@@ -1347,6 +1350,9 @@ const MOCK_SUBJECTS={
 };
 const MOCK_SUBJ="真题";                 // 归到既有分类,不新建分类概念
 const MOCK_Y1=2026;                     // 最近一年,各科往回数到自己的 y0
+/* 年份分组:默认只露 2015 起的 12 个(刚好三行整除),更早的收在「更早」后面。
+   一个年份都不删 —— 只是不让 17 个铺开成 4/4/4/4/1 那种残缺末行。 */
+const MOCK_YCUT=2015;
 const mockSubName=k=>(MOCK_SUBJECTS[k]||{n:k}).n;
 function mockYears(sub){
   const s=MOCK_SUBJECTS[sub];if(!s)return [];
@@ -3189,15 +3195,34 @@ function mockFix(box){
       seen[id]=1;
       const num=v=>(v===null||v===undefined||v==="")?null
         :(isFinite(Number(v))?Number(v):null);
-      out.records.push({id:id,subject:r.subject,year:Number(r.year),scope:r.scope,
+      const rec={id:id,subject:r.subject,year:Number(r.year),scope:r.scope,
         attempt:Number(r.attempt)>0?Math.round(Number(r.attempt)):1,
         d:r.d,mins:Math.round(Number(r.mins)),
         wrong:num(r.wrong),score:num(r.score),
-        done:r.done===false?false:true,ts:Number(r.ts)||0});
+        done:r.done===false?false:true,ts:Number(r.ts)||0};
+      // bid = 批次号。同一次保存生成的几条写同一个值,「撤销刚才那一批」靠它。
+      // 老记录没有 bid,就永远不带 —— 不回填、不迁移,它们也就永远不出现撤销入口。
+      if(r.bid)rec.bid=String(r.bid);
+      out.records.push(rec);
     });
     if(box.run&&typeof box.run==="object")out.run=box.run;
+    /* draft(录到一半的草稿)和 undo(撤销指针)都是「这台设备此刻的临时状态」,
+       和 run 同类:load() 要读回来,但导出不带、导入也不吃别人的。
+       草稿本身格式不对就直接丢掉 —— 不能因为一个草稿把整个模块卡死。 */
+    if(mockDraftOk(box.draft))out.draft=box.draft;
+    if(box.undo&&typeof box.undo==="object"&&box.undo.bid&&box.undo.d)out.undo=box.undo;
   }
   return {box:out,dropped:dropped};
+}
+/* 草稿的体检:科目题型都得认识,数字容器得是对象。不合格就当没有过。 */
+function mockDraftOk(d){
+  if(!d||typeof d!=="object")return false;
+  const sub=MOCK_SUBJECTS[d.sub];
+  if(!sub)return false;
+  if(d.year!=null&&!(Number(d.year)>=2000&&Number(d.year)<=2100))return false;
+  if(!Array.isArray(d.scopes))return false;
+  if(d.scopes.some(k=>!mockSc(d.sub,k)))return false;
+  return ["mins","wrong","score"].every(f=>!d[f]||typeof d[f]==="object");
 }
 function mockData(){
   if(!D.mockExam||typeof D.mockExam!=="object")D.mockExam=mockEmpty();
@@ -3216,7 +3241,7 @@ function mockMins(k){return mockOf(k).reduce((a,r)=>a+(Number(r.mins)||0),0);}
 function mockAttempt(sub,y,sc){
   return mockRecords().filter(r=>r.subject===sub&&r.year===Number(y)&&r.scope===sc).length+1;
 }
-function mockAdd(sub,y,sc,mins,score,wrong){
+function mockAdd(sub,y,sc,mins,score,wrong,bid){
   const dk=refreshDay();
   const b=mockData();
   const num=v=>(v===null||v===undefined||v==="")?null
@@ -3230,6 +3255,7 @@ function mockAdd(sub,y,sc,mins,score,wrong){
     // 客观题的分数一律由错题数算,不接受外面传进来的数,免得两个来源打架
     score:mockIsObj(sub,sc)?mockScoreOf(sub,sc,w):num(score),
     done:true,ts:Date.now()};
+  if(bid)rec.bid=String(bid);
   b.records.push(rec);
   return rec;
 }
@@ -3239,9 +3265,67 @@ function mockAdd(sub,y,sc,mins,score,wrong){
    录入屏上一个字都不用打:用时是滑块(打开就停在考场建议值上),
    客观题只点「错了几题」,主观题只拖分数。全程没有文本输入框。 */
 const MOCK_RUN_MAX=6*3600*1000;          // 计时忘了结束的上限,超过就不当成一次训练
-let mkOpen=false,mkSub=null,mkYear=null,mkScopes=[],mkEntry=false;
+let mkOpen=false,mkSub=null,mkYear=null,mkScopes=[],mkEntry=false,mkYearMore=false;
 let mkMinsIn={},mkWrongIn={},mkScoreIn={};
 let mkMsg="",mkTid=null,mkClkEl=null;
+/* ---- 录到一半的草稿 ----
+   手机上切个 App 回来页面就被回收了,选好的题型、点好的错题数全在内存里,
+   一刷新就没。对一个启动困难的人,那等于要她重新启动一次。
+   所以录入过程本身也落盘,回来直接接着录 —— 不弹「是否恢复」,
+   多问一句就是多一道摩擦。 */
+function mkDraftNow(){
+  if(!mkSub)return null;
+  return {sub:mkSub,year:mkYear,scopes:mkScopes.slice(),entry:mkEntry?1:0,
+    mins:Object.assign({},mkMinsIn),wrong:Object.assign({},mkWrongIn),
+    score:Object.assign({},mkScoreIn)};
+}
+function mkSyncDraft(){
+  const b=mockData();
+  const now=mkDraftNow();
+  if(JSON.stringify(b.draft||null)===JSON.stringify(now))return;   // 没变就不写盘
+  if(now)b.draft=now;else delete b.draft;
+  save();
+}
+function mkDropDraft(){
+  const b=mockData();
+  if(b.draft){delete b.draft;save();}
+}
+let mkDraftTried=false;
+function mkRestoreDraft(){
+  /* 只在这次打开页面的第一次渲染试一次。
+     每次渲染都恢复的话,她点「返回」回到选科目那一屏,
+     草稿会立刻把她again推回去 —— 返回键就废了。 */
+  if(mkDraftTried)return;
+  mkDraftTried=true;
+  const b=D.mockExam,d=b&&b.draft;
+  if(!d||mkSub)return;                       // 已经有状态就不覆盖
+  if(!mockDraftOk(d)){mkDropDraft();return;} // 草稿读不懂就丢掉,不能让它卡住模块
+  mkSub=d.sub;mkYear=(d.year==null?null:Number(d.year));
+  mkScopes=(d.scopes||[]).slice();mkEntry=!!d.entry;
+  mkMinsIn=Object.assign({},d.mins);mkWrongIn=Object.assign({},d.wrong);
+  mkScoreIn=Object.assign({},d.score);
+  if(mkEntry)mkOpen=true;                    // 正在录的东西,要看得见
+}
+/* ---- 撤销刚才那一批 ----
+   只针对最新一批、且没跨学习日:取消一次误操作,不是编辑历史的入口。
+   整批一起撤,不能挑着撤(挑着撤就是在改写历史)。
+   撤销 = 整条删掉,不留痕迹,也不重算任何刷次 —— 刷次固化是既有语义。 */
+function mkUndoAvail(){
+  const b=D.mockExam,u=b&&b.undo;
+  if(!u||!u.bid)return null;
+  if(u.d!==TODAY){mockData()&&delete D.mockExam.undo;save();return null;}
+  const n=mockRecords().filter(r=>r&&r.bid===u.bid).length;
+  if(!n){delete D.mockExam.undo;save();return null;}
+  return {bid:u.bid,n:n,label:u.label||""};
+}
+function mkDoUndo(){
+  const u=mkUndoAvail();if(!u)return;
+  const b=mockData();
+  b.records=b.records.filter(r=>!(r&&r.bid===u.bid));
+  delete b.undo;
+  mkMsg="撤销了 "+u.n+" 条,没有留下痕迹。";
+  save();render();
+}
 function mockRun(){
   const b=D.mockExam,r=b&&b.run;
   return (r&&typeof r==="object"&&MOCK_SUBJECTS[r.subject]&&Number(r.start)>0)?r:null;
@@ -3275,7 +3359,7 @@ function mkEnter(){
   renderMock();
 }
 function mkReset(){
-  mkSub=null;mkYear=null;mkScopes=[];mkEntry=false;
+  mkSub=null;mkYear=null;mkScopes=[];mkEntry=false;mkYearMore=false;
   mkMinsIn={};mkWrongIn={};mkScoreIn={};
 }
 /* 保存:选了几个题型就生成几条独立记录,每条各自算刷次、各自存自己那一格的用时。
@@ -3296,8 +3380,14 @@ function mkSaveAll(){
   }
   const order=MOCK_SUBJECTS[sub].sc.map(x=>x.k);
   const list=mkScopes.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
-  const made=list.map(k=>mockAdd(sub,y,k,mkMinsIn[k],mkScoreIn[k],mkWrongIn[k]));
+  // 同一次保存的几条写同一个批次号,撤销靠它整批认人,不靠时间戳相近去猜
+  const bid="b_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,6);
+  const made=list.map(k=>mockAdd(sub,y,k,mkMinsIn[k],mkScoreIn[k],mkWrongIn[k],bid));
   const total=made.reduce((a,r)=>a+r.mins,0);
+  const bx=mockData();
+  bx.undo={bid:bid,d:made[0].d,n:made.length,
+    label:made.map(r=>mockScName(sub,r.scope)).join("、")};
+  delete bx.draft;                       // 存成功了,草稿的使命就结束了
   mkMsg=made.length===1
     ?("记下了:"+mockLabel(made[0])+" · 第 "+made[0].attempt+" 刷 · "+made[0].mins+" 分钟"
       +(made[0].score!=null?" · "+made[0].score+" 分":""))
@@ -3311,9 +3401,11 @@ function renderMock(){
   const bar=$("#mkToggle"),box=$("#mkList");
   if(!bar||!box)return;
   mockStale();
+  mkRestoreDraft();                       // 切 App 回来,直接回到刚才那一屏
   const run=mockRun(),recs=mockRecords();
   // 计时中途关掉页面再回来:把流程恢复到那一条上,免得「完成」没有落脚点
   if(run&&!mkSub){mkSub=run.subject;mkYear=run.year;mkScopes=[run.scope];mkEnter0();}
+  mkSyncDraft();                          // 这一屏的状态本身也存下来
   let head2;
   if(run)head2="正在计时 · "+run.year+" "+mockSubName(run.subject)
     +" · "+mockScName(run.subject,run.scope);
@@ -3462,7 +3554,11 @@ function renderMock(){
     const act=mk("div","mkrow");
     act.appendChild(chip(mkScopes.length>1?("保存这 "+mkScopes.length+" 条"):"保存",
       ()=>{mkSaveAll();},1));
-    act.appendChild(chip("返回",()=>{mkEntry=false;renderMock();}));
+    act.appendChild(chip("返回",()=>{
+      // 主动退出录入屏 = 放弃这次草稿,填过的用时和错题数一起清掉
+      mkEntry=false;mkMinsIn={};mkWrongIn={};mkScoreIn={};
+      mkDropDraft();renderMock();
+    }));
     box.appendChild(act);
     if(mkMsg)box.appendChild(mk("p","mkmsg",mkMsg));
     return;
@@ -3470,11 +3566,24 @@ function renderMock(){
 
   /* ---- 第一屏:科目 ---- */
   if(!mkSub){
+    /* 撤销入口:一直挂着,直到又存了新的一批、跨了学习日、或者她自己点掉。
+       不做倒计时 —— 保存完切个 App 回来就过期,那个设计本身就是压力源。 */
+    const u=mkUndoAvail();
+    if(u){
+      const ur=mk("div","mkrow mkundo");
+      ur.appendChild(mk("span","mklab","刚才记的:"+u.label));
+      ur.appendChild(chip("撤销刚才那 "+u.n+" 条",()=>{mkDoUndo();}));
+      ur.appendChild(chip("不用",()=>{
+        delete mockData().undo;save();renderMock();
+      }));
+      box.appendChild(ur);
+    }
     const r=mk("div","mkrow");
     r.appendChild(mk("span","mklab","考哪一门"));
     Object.keys(MOCK_SUBJECTS).forEach(k=>{
       r.appendChild(chip(MOCK_SUBJECTS[k].n,()=>{
-        mkSub=k;mkYear=null;mkScopes=[];mkEntry=false;mkMsg="";renderMock();}));
+        mkSub=k;mkYear=null;mkScopes=[];mkEntry=false;mkYearMore=false;
+        mkMsg="";renderMock();}));
     });
     box.appendChild(r);
     recs.slice(-3).reverse().forEach(x=>{
@@ -3484,15 +3593,30 @@ function renderMock(){
     });
   /* ---- 第二屏:年份 ---- */
   }else if(!mkYear){
+    /* 年份一个不删,只是分组:默认露 2015 起的 12 个(刚好三行整除),
+       更早的收在「更早」后面单独成块。两科用同一套结构,切科目布局不跳。 */
+    const ys=mockYears(mkSub);
+    const yBtn=y=>{const b=chip(String(y),()=>{mkYear=y;mkScopes=[];renderMock();});
+      b.className="mkchip y";return b;};
     const r=mk("div","mkrow");
     r.appendChild(mk("span","mklab",mockSubName(mkSub)+" · 哪一年"));
-    mockYears(mkSub).forEach(y=>{
-      const b=chip(String(y),()=>{mkYear=y;mkScopes=[];renderMock();});
-      b.className="mkchip y";
-      r.appendChild(b);
-    });
+    ys.filter(y=>y>=MOCK_YCUT).forEach(y=>r.appendChild(yBtn(y)));
     box.appendChild(r);
-    box.appendChild(backRow(()=>{mkSub=null;renderMock();}));
+    const older=ys.filter(y=>y<MOCK_YCUT);
+    if(older.length){
+      if(!mkYearMore){
+        const mr=mk("div","mkrow");
+        mr.appendChild(chip("更早("+older[older.length-1]+"–"+older[0]+")",
+          ()=>{mkYearMore=true;renderMock();}));
+        box.appendChild(mr);
+      }else{
+        const mr=mk("div","mkrow");
+        mr.appendChild(mk("span","mklab","更早"));
+        older.forEach(y=>mr.appendChild(yBtn(y)));
+        box.appendChild(mr);
+      }
+    }
+    box.appendChild(backRow(()=>{mkSub=null;mkYearMore=false;renderMock();}));
   /* ---- 第三屏:题型,可多选 ---- */
   }else{
     const r=mk("div","mkrow");
@@ -3512,7 +3636,7 @@ function renderMock(){
     }else{
       act.appendChild(mk("span","mklab2","选一个或几个,再往下走"));
     }
-    act.appendChild(chip("返回",()=>{mkYear=null;mkScopes=[];renderMock();}));
+    act.appendChild(chip("返回",()=>{mkYear=null;mkScopes=[];mkYearMore=false;renderMock();}));
     box.appendChild(act);
   }
   if(mkMsg)box.appendChild(mk("p","mkmsg",mkMsg));
@@ -5405,7 +5529,11 @@ $("#expBtn").onclick=()=>{
   // 那会让你以为备份好了。
   let url=null;
   try{
-    const blob=new Blob([JSON.stringify(D,null,2)],{type:"application/json"});
+    /* 草稿和撤销指针是「这台设备此刻的临时状态」,和计时同类:
+       备份里不该有它们,换设备导入时也不会冒出别人录到一半的东西。 */
+    const snap=JSON.parse(JSON.stringify(D));
+    if(snap.mockExam){delete snap.mockExam.draft;delete snap.mockExam.undo;}
+    const blob=new Blob([JSON.stringify(snap,null,2)],{type:"application/json"});
     const a=document.createElement("a");
     url=URL.createObjectURL(blob);
     a.href=url;

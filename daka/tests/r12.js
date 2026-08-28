@@ -676,7 +676,7 @@ const doImport=(e,text)=>{
     record(e,'英语一',2024,'阅读一',40,'read1');
     const r=recs(e)[0];
     eq(Object.keys(r).sort().join(','),
-      'attempt,d,done,id,mins,scope,score,subject,ts,wrong,year','记录字段和约定不一致');
+      'attempt,bid,d,done,id,mins,scope,score,subject,ts,wrong,year','记录字段和约定不一致');
   });
   T('没有引入网络请求',()=>{
     const seg=js.slice(js.indexOf('function mockEmpty'),js.indexOf('function stdState'));
