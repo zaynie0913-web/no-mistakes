@@ -1,0 +1,70 @@
+name: Sync X bookmarks
+
+on:
+  schedule:
+    # 21:00 UTC = 05:00 北京时间. GitHub 的定时任务在整点常有排队延迟,
+    # 所以避开 :00, 也避开 UTC 整点高峰.
+    - cron: "17 21 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "全量重扫(而不是只抓新增)"
+        type: boolean
+        default: false
+
+concurrency:
+  # 两个 run 同时刷新 token 会互相作废对方拿到的 refresh token.
+  group: x-bookmarks-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Sync
+        id: sync
+        env:
+          X_CLIENT_ID: ${{ secrets.X_CLIENT_ID }}
+          X_REFRESH_TOKEN: ${{ secrets.X_REFRESH_TOKEN }}
+          # 用来把轮换后的 refresh token 写回 Secrets.
+          # 必须是 fine-grained PAT, 权限 Secrets: read and write.
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python3 scripts/sync.py \
+            ${{ inputs.full && '--full' || '' }}
+
+      - name: Commit
+        run: |
+          git config user.name "x-bookmarks-sync"
+          git config user.email "actions@github.com"
+          git add data
+          if git diff --staged --quiet; then
+            echo "没有新书签, 不提交"
+            exit 0
+          fi
+          git commit -m "书签同步: +${{ steps.sync.outputs.new_count }} 条 (共 ${{ steps.sync.outputs.total_count }})"
+          git push
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### X 书签同步"
+            echo ""
+            echo "- 新增: ${{ steps.sync.outputs.new_count || '—' }}"
+            echo "- 总数: ${{ steps.sync.outputs.total_count || '—' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
