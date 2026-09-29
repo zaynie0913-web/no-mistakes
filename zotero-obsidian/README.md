@@ -30,10 +30,13 @@ PowerShell 再试。
 ### 1. Zotero 侧
 
 1. Zotero 7（已装则跳过）
-2. 装 **Better BibTeX**：下载 `.xpi` → Zotero → 工具 → 附加组件 → 齿轮 →
-   Install Add-on From File
-3. Better BibTeX 设置 → Automatic Export → 把你的库自动导出成 `.bib`，
-   **导出目标放进 Obsidian 库根目录**（Obsidian 侧要读它）
+2. 装 **Better BibTeX**：从
+   [releases](https://github.com/retorquere/zotero-better-bibtex/releases/latest)
+   下载 `.xpi`（Firefox 用户要右键「另存为」，否则 Firefox 会试图把它装给自己）→
+   Zotero → **工具 → 插件** → 右上角齿轮 → 从文件安装插件 → 重启 Zotero
+3. 建自动导出：左栏右键「我的文库」→ 导出文库… → 格式选 **Better BibTeX** →
+   勾选 **保持更新** → 存到 **Obsidian 库根目录**，文件名 `library.bib`。
+   之后 Zotero 里每次增删改都会自动同步这个文件
 
 ### 2. Obsidian 侧
 
