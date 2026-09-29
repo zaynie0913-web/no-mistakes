@@ -1059,7 +1059,7 @@ def make_pdf(path, *, info=b"", xmp=b"", streams=(), raw=b""):
     if xmp:
         parts.append(b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>" + xmp + b"</x:xmpmeta>\n")
     if info:
-        parts.append(b"99 0 obj\n<< " + info + b" >>\nendobj\n")
+        parts.append(b"99 0 obj\n<< " + info + b" /Producer (test) >>\nendobj\n")
     parts.append(raw)
     parts.append(b"%%EOF\n")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1151,9 +1151,9 @@ class TestPdfIdentifiers(unittest.TestCase):
         self.assertEqual(got["title"], "Some Paper Title Here")
 
     def test_seed_line_carries_the_source_as_inline_comment(self):
-        p = make_pdf(self.dir / "x.pdf", xmp=b"<prism:doi>10.1000/abc</prism:doi>")
+        p = make_pdf(self.dir / "x.pdf", xmp=b"<prism:doi>10.1000/abc1</prism:doi>")
         line = pk.seed_line(pk.pdf_identifiers(p), p)
-        self.assertTrue(line.startswith("10.1000/abc"))
+        self.assertTrue(line.startswith("10.1000/abc1"))
         self.assertIn("# x.pdf", line)
 
 
@@ -1161,11 +1161,11 @@ class TestInlineSeedComments(unittest.TestCase):
     def test_inline_comment_is_stripped(self):
         with tempfile.TemporaryDirectory() as tmp:
             f = Path(tmp) / "s.txt"
-            f.write_text("10.1000/abc  # a.pdf (元数据 DOI)\n"
+            f.write_text("10.1000/abc1  # a.pdf (元数据 DOI)\n"
                          "Graph Attention Networks  # b.pdf (文件名)\n"
                          "C# in Depth\n", encoding="utf-8")
             self.assertEqual(pk.read_seeds(f),
-                             ["10.1000/abc", "Graph Attention Networks", "C# in Depth"])
+                             ["10.1000/abc1", "Graph Attention Networks", "C# in Depth"])
 
 
 class TestSeedsCommand(unittest.TestCase):
@@ -1173,19 +1173,19 @@ class TestSeedsCommand(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             lib = root / "毕业论文" / "01_文献" / "原始PDF"
-            make_pdf(lib / "a.pdf", xmp=b"<prism:doi>10.1000/aaa</prism:doi>")
-            make_pdf(lib / "子文件夹" / "b.pdf", xmp=b"<prism:doi>10.1000/bbb</prism:doi>")
-            make_pdf(lib / "c.PDF", xmp=b"<prism:doi>10.1000/aaa</prism:doi>")   # 同一篇下了两次
+            make_pdf(lib / "a.pdf", xmp=b"<prism:doi>10.1000/aaa1</prism:doi>")
+            make_pdf(lib / "子文件夹" / "b.pdf", xmp=b"<prism:doi>10.1000/bbb1</prism:doi>")
+            make_pdf(lib / "c.PDF", xmp=b"<prism:doi>10.1000/aaa1</prism:doi>")   # 同一篇下了两次
             (lib / "notes.docx").write_bytes(b"x")
             seeds = root / "seeds.txt"
             seeds.write_text("# 我的注释\n10.9/mine\n", encoding="utf-8")
 
             rc = pk.main(["seeds", "--from-pdfs", str(lib), "--out", str(seeds)])
             self.assertEqual(rc, 0)
-            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa", "10.1000/bbb"])
+            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa1", "10.1000/bbb1"])
 
             pk.main(["seeds", "--from-pdfs", str(lib), "--out", str(seeds)])  # 再跑一次
-            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa", "10.1000/bbb"])
+            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa1", "10.1000/bbb1"])
             self.assertIn("# 我的注释", seeds.read_text(encoding="utf-8"))
 
     def test_missing_folder_fails_loudly(self):
@@ -1320,3 +1320,88 @@ class TestHaveSeeds(unittest.TestCase):
         self.assertFalse(any("Seed One" in d for d in downloaded))
         self.assertNotIn("Seed One on Transformers", ris)
         self.assertIn("Foundational Work Everyone Cites", ris)   # 关联论文照常
+
+
+class TestFirstRealLibraryRun(unittest.TestCase):
+    """用户第一次拿自己 7 篇文献跑 seeds 暴露出来的问题."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_bookmark_titles_are_not_the_paper_title(self):
+        # Wu_2025 被认成 "（一）服务质量": 那是书签 (outline) 条目, 也用 /Title 键
+        heading = "（一）服务质量".encode("utf-16-be").hex().encode()
+        p = make_pdf(self.dir / "x.pdf", streams=[REFS], raw=(
+            b"7 0 obj\n<< /Title <FEFF" + heading + b"> /Parent 3 0 R /Next 8 0 R "
+            b"/Dest [1 0 R /XYZ 0 792 0] >>\nendobj\n"))
+        self.assertIsNone(pk.pdf_identifiers(p)["title"])
+
+    def test_info_title_still_found_next_to_bookmarks(self):
+        p = make_pdf(self.dir / "x.pdf", streams=[REFS],
+                     raw=b"7 0 obj\n<< /Title (Section 1 Introduction here) /Parent 3 0 R >>\nendobj\n",
+                     info=b"/Title (Service Quality and Theme Park Satisfaction)")
+        self.assertEqual(pk.pdf_identifiers(p)["title"],
+                         "Service Quality and Theme Park Satisfaction")
+
+    def test_truncated_doi_fragments_are_rejected(self):
+        # Yuan_2024 被认成 "10.1016/j": 参考文献里的 Elsevier DOI 在同一处被排版拆断
+        for frag in (b"10.1016/j", b"10.1016/j.", b"10.1016/j.tourman", b"10.3389/fpsyg."):
+            self.assertIsNone(pk._clean_doi(frag), frag)
+        for ok in (b"10.3390/su10103409", b"10.1155/2022/6120511", b"10.1038/nature14539"):
+            self.assertIsNotNone(pk._clean_doi(ok), ok)
+
+    def test_repeated_truncated_fragment_cannot_win(self):
+        split_refs = b"".join(b"[(%d. ... doi: 10.1016/j)-30(.tourman.20%02d.1%04d)]TJ\n" % (i, i, i)
+                              for i in range(12))
+        p = make_pdf(self.dir / "Yuan.pdf", streams=[split_refs])
+        got = pk.pdf_identifiers(p)
+        self.assertNotEqual(got["doi"], "10.1016/j")
+
+    def test_doi_split_across_tj_pieces_is_rejoined(self):
+        # 本篇 DOI 在每页页脚被排版拆成两段, 拼回来才认得出
+        footer = b"BT [(https://doi.org/10.3389/fpsyg.)-20(2024.1234567)]TJ ET\n"
+        p = make_pdf(self.dir / "f.pdf", streams=[footer] * 6 + [REFS])
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["doi"], "10.3389/fpsyg.2024.1234567")
+        self.assertEqual(got["how"], "正文反复出现的 DOI")
+
+    def test_unsplit_doi_inside_tj_is_not_double_counted(self):
+        # 同一处 DOI 在原始流和拼接文本里各出现一次, 不能算成"反复出现"
+        one = b"BT [(Ref doi:10.1000/single2024)]TJ ET\n"
+        p = make_pdf(self.dir / "g.pdf", streams=[one + REFS])
+        self.assertNotEqual(pk.pdf_identifiers(p)["how"], "正文反复出现的 DOI")
+
+    def test_personal_naming_convention_is_not_a_title(self):
+        # 用户命名: 作者_年份_中文概括_期刊. 中文概括是自己写的, 不是论文标题.
+        for name in ("Wu_2025_服务质量提升主题公园满意度_人文社科学刊.pdf",
+                     "{Wang_2024}_心理账户视角主题公园重游意愿_PJLSS.pdf",
+                     "{Bae等_2018}_游客态度三维度塑造城市形象_Sustainability.pdf"):
+            p = make_pdf(self.dir / name, streams=[REFS])
+            self.assertIsNone(pk.pdf_identifiers(p)["title"], name)
+
+    def test_unrecognised_file_gets_a_lookup_hint_from_its_name(self):
+        hint = pk.filename_hint(Path("{Wang_2024}_心理账户视角主题公园重游意愿_PJLSS.pdf"))
+        self.assertEqual(hint, "Wang, 2024, PJLSS")
+        hint = pk.filename_hint(Path("{Moisescu等_2021}_户外公园满意度驱动忠诚度_IJERPH.pdf"))
+        self.assertEqual(hint, "Moisescu 等, 2021, IJERPH")
+        self.assertIsNone(pk.filename_hint(Path("random.pdf")))
+
+
+class TestTitleSearchNeedsARealMatch(unittest.TestCase):
+    def test_unrelated_search_results_are_not_accepted_as_a_seed(self):
+        # 以前永远取相似度最高的一条, 哪怕相似度是 0, 随便一篇论文就成了种子.
+        self.assertIsNone(pk.resolve_seed(FakeClient(), "心理账户视角主题公园重游意愿"))
+        self.assertIsNone(pk.resolve_seed(FakeClient(), "Completely Unrelated Words Here"))
+
+    def test_close_title_still_matches(self):
+        got = pk.resolve_seed(FakeClient(), "Seed One on Transformers")
+        self.assertEqual(got.oid, "W1")
+
+    def test_cjk_titles_are_compared_by_characters(self):
+        a = pk.norm_title("基于图神经网络的交通流预测研究")
+        b = pk.norm_title("基于图神经网络的交通流预测")
+        self.assertGreater(pk.title_overlap(a, b), 0.8)

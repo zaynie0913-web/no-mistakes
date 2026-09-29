@@ -311,11 +311,20 @@ def resolve_seed(client: Client, raw: str) -> Paper | None:
         return None
     want = norm_title(s)
     best = max(results, key=lambda w: title_overlap(want, norm_title(w.get("title") or "")))
+    # 以前永远取最接近的一条, 哪怕毫不相干, 随便一篇论文就成了种子.
+    if title_overlap(want, norm_title(best.get("title") or "")) < TITLE_MATCH_MIN:
+        log(f"  · 搜到最接近的是《{(best.get('title') or '')[:60]}》, 不像同一篇, 不用")
+        return None
     return Paper.from_json(best)
 
 
+TITLE_MATCH_MIN = 0.5
+
+
 def norm_title(t: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]+", (t or "").lower()))
+    """英文按词, 中文按字. 只按英文词切的话, 中文标题的集合是空的, 相似度永远为 0."""
+    t = (t or "").lower()
+    return set(re.findall(r"[a-z0-9]+", t)) | set(re.findall(r"[\u4e00-\u9fff]", t))
 
 
 def title_overlap(a: set[str], b: set[str]) -> float:
@@ -1389,7 +1398,12 @@ def _clean_doi(raw: bytes) -> str | None:
     for suffix in ("/abstract", "/full", "/epdf", "/pdf", ".pdf"):
         if s.lower().endswith(suffix):
             s = s[: -len(suffix)]
-    return s.lower() if re.fullmatch(r"10\.\d{4,9}/\S+", s) else None
+    m = re.fullmatch(r"10\.\d{4,9}/(\S+)", s)
+    # 排版常把 DOI 拆成几段, 留下 "10.1016/j" "10.3389/fpsyg" 这种残片;
+    # 参考文献里好几条在同一处断开, 残片还会"反复出现". 真实 DOI 后缀几乎都带数字.
+    if not m or len(m.group(1)) < 4 or not re.search(r"\d", m.group(1)):
+        return None
+    return s.lower()
 
 
 def _pdf_blobs(data: bytes, cap: int = 40_000_000) -> Iterator[bytes]:
@@ -1414,6 +1428,22 @@ def _pdf_blobs(data: bytes, cap: int = 40_000_000) -> Iterator[bytes]:
             yield out
             if total > cap:
                 return
+
+
+TJ_RE = re.compile(rb"\[((?:[^\[\]\\]|\\.)*)\]\s*TJ", re.S)
+LIT_RE = re.compile(rb"\(((?:[^\\()]|\\.)*)\)", re.S)
+
+
+def _join_tj(blob: bytes) -> bytes:
+    """把 TJ 数组里被字距调整拆开的字符串拼回来: [(10.3389/fpsyg.)-20(2024.1)]TJ.
+    只对标准编码字体有效; CID 字体的字形编号本来就读不出, 那就靠元数据和链接."""
+    if b"TJ" not in blob:
+        return b""
+    pieces = []
+    for m in TJ_RE.finditer(blob):
+        joined = b"".join(LIT_RE.findall(m.group(1)))
+        pieces.append(re.sub(rb"\\([()\\])", rb"\1", joined))
+    return b"\n".join(pieces)
 
 
 def _decode_pdf_bytes(b: bytes) -> str:
@@ -1479,6 +1509,23 @@ def _read_pdf_string(data: bytes, i: int) -> str | None:
     return _decode_pdf_bytes(bytes(out))
 
 
+INFO_KEYS = (b"/Producer", b"/Creator", b"/CreationDate", b"/ModDate", b"/Author")
+OUTLINE_KEYS = (b"/Parent", b"/Dest", b"/First", b"/Last", b"/Count", b"/Prev", b"/Next")
+
+
+def _in_info_dict(blob: bytes, k: int) -> bool:
+    """书签 (outline) 条目也用 /Title 键, 存的是"（一）服务质量"这种小节名.
+    Info 字典带 /Producer 之类的键, 书签带 /Parent /Dest 之类的键, 据此区分."""
+    start = blob.rfind(b"<<", 0, k)
+    end = blob.find(b">>", k)
+    if start < 0 or end < 0:
+        return False
+    region = blob[start:end]
+    if any(x in region for x in OUTLINE_KEYS):
+        return False
+    return any(x in region for x in INFO_KEYS)
+
+
 def _useful_title(t: str | None) -> bool:
     if not t:
         return False
@@ -1513,8 +1560,25 @@ FILENAME_WORDS = {
 }
 
 
+# 个人命名习惯: 作者(等)_年份_自己写的概括_期刊, 作者年份可能套在花括号里.
+PERSONAL_NAME_RE = re.compile(r"^\{?([A-Za-z][A-Za-z\-']*)(等)?_((?:19|20)\d{2})\}?_(.+)$")
+
+
+def filename_hint(path: Path) -> str | None:
+    """认不出的文件, 从个人命名里读出 作者/年份/期刊, 方便手动去查 DOI."""
+    m = PERSONAL_NAME_RE.match(path.stem)
+    if not m:
+        return None
+    author, etal, year, rest = m.groups()
+    journal = rest.rsplit("_", 1)[1] if "_" in rest else None
+    who = f"{author} 等" if etal else author
+    return ", ".join(x for x in (who, year, journal) if x)
+
+
 def _title_from_filename(path: Path) -> str | None:
     s = path.stem
+    if PERSONAL_NAME_RE.match(s):
+        return None  # 中间那段是自己写的概括, 拿去搜只会搜到不相干的论文
     s = re.sub(r"\s*\(\d+\)$", "", s)            # 重复下载: xxx (1)
     s = re.sub(r"\s*-\s*副本(\s*\(\d+\))?$", "", s)
     if re.search(r"[一-鿿]", s) and "_" in s:
@@ -1547,15 +1611,27 @@ def pdf_identifiers(path: Path) -> dict:
     counts: Counter = Counter()
     arxiv = None
     title = None
-    for blob in _pdf_blobs(data):
+    for i, blob in enumerate(_pdf_blobs(data)):
         if not meta_doi:
             m = META_DOI_RE.search(blob)
             if m:
                 meta_doi = _clean_doi(m.group(1))
+        here: Counter = Counter()
         for raw in PDF_DOI_RE.findall(blob):
             d = _clean_doi(raw)
             if d:
-                counts[d] += 1
+                here[d] += 1
+        if i:  # 整个文件那一块多是压缩乱码, 只对解压出来的流拼 TJ
+            joined: Counter = Counter()
+            for raw in PDF_DOI_RE.findall(_join_tj(blob)):
+                d = _clean_doi(raw)
+                if d:
+                    joined[d] += 1
+            # 同一处 DOI 在原始流和拼接文本里各出现一次, 取较大值而不是相加,
+            # 不然一条参考文献会被算成"反复出现".
+            for d, n in joined.items():
+                here[d] = max(here[d], n)
+        counts.update(here)
         if not arxiv:
             m = ARXIV_MARK_RE.search(blob)
             if m:
@@ -1563,9 +1639,10 @@ def pdf_identifiers(path: Path) -> dict:
         if title is None:
             k = blob.find(b"/Title")
             while k >= 0 and title is None:
-                t = _read_pdf_string(blob, k + len(b"/Title"))
-                if _useful_title(t):
-                    title = re.sub(r"\s+", " ", t).strip()
+                if _in_info_dict(blob, k):
+                    t = _read_pdf_string(blob, k + len(b"/Title"))
+                    if _useful_title(t):
+                        title = re.sub(r"\s+", " ", t).strip()
                 k = blob.find(b"/Title", k + 1)
         if title is None:
             m = re.search(rb"<dc:title>\s*<rdf:Alt>\s*<rdf:li[^>]*>(.*?)</rdf:li>", blob, re.S)
@@ -1624,7 +1701,11 @@ def cmd_seeds(args: argparse.Namespace) -> int:
         line = seed_line(ids, p)
         if not line:
             unknown.append(rel)
-            log(f"  ? {rel}: 认不出, 跳过")
+            hint = filename_hint(p)
+            if hint:
+                log(f"  ? {rel}: 认不出 — 按文件名是 {hint}, 打开 PDF 首页找到 DOI 手动补进清单")
+            else:
+                log(f"  ? {rel}: 认不出, 跳过")
             continue
         key = line.split("  # ", 1)[0]
         if key.lower() in have:
