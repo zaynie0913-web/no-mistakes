@@ -22,6 +22,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import time
 import urllib.error
@@ -200,6 +201,7 @@ class Paper:
     # 所有开放获取副本的 PDF 地址, 最推荐的排第一. 出版社那份常被拦, 还有 PMC、机构仓库可试.
     pdf_urls: list[str] = field(default_factory=list)
     date: str | None = None
+    landing: str | None = None
 
     # 打分过程中填充
     score: float = 0.0
@@ -247,6 +249,7 @@ class Paper:
             type=w.get("type"),
             pdf_urls=urls,
             date=w.get("publication_date"),
+            landing=(w.get("primary_location") or {}).get("landing_page_url"),
         )
 
     @property
@@ -2062,6 +2065,16 @@ def citers_budget(explicit: int | None, n_seeds: int) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = load_config()
+    if args.webvpn:
+        host = re.sub(r"^https?://", "", args.webvpn.strip().lower()).strip("/")
+        if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", host):
+            log(f"× 这不像 WebVPN 域名: {args.webvpn} (例: web.bisu.edu.cn)")
+            return 1
+        cfg["webvpn"] = host
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        log(f"✓ 记住了学校 WebVPN: {host}")
+        if not args.mailto:
+            return 0
     if args.mailto:
         m = args.mailto.strip()
         if not EMAIL_RE.fullmatch(m):
@@ -2623,6 +2636,315 @@ def cmd_outline(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# 校外下载: 学校 WebVPN 直达链接清单 + 把下好的 PDF 挂到 Zotero 已有条目上
+# --------------------------------------------------------------------------
+
+FETCH_PAGE = "校外下载清单.html"
+ATTACH_SCRIPT = "挂到Zotero.js"
+
+
+def vpn_host(host: str, suffix: str, port443: bool) -> str:
+    """国内高校 WebVPN 的常见改写: 原有横杠变双横杠, 点变横杠, https 常带 -443.
+    例: www.e-unwto.org -> www-e--unwto-org-443.web.bisu.edu.cn (照学校门户校验过)."""
+    return host.replace("-", "--").replace(".", "-") + ("-443" if port443 else "") + "." + suffix
+
+
+def _pii(landing: str | None) -> str | None:
+    m = re.search(r"/pii/([A-Z0-9()\-]+)", landing or "", re.I)
+    return m.group(1) if m else None
+
+
+def fetch_link(doi: str | None, landing: str | None, title: str,
+               vpn: str | None) -> tuple[str, str, bool, str]:
+    """返回 (数据库, 链接, 点了是否直接下载 PDF, 提示). 只用学校门户里列出的数据库;
+    doi.org 经 WebVPN 打不开 (学校只放行列表里的站)."""
+    q = urllib.parse.quote(doi or "", safe="/")
+    q_all = urllib.parse.quote(doi or "", safe="")
+    if not vpn:
+        return ("未配置 WebVPN", f"https://doi.org/{q}" if doi else "", False,
+                f"还没配置学校 WebVPN: 运行 {PY} paperkit.py config --webvpn 学校的WebVPN域名")
+
+    def v(host: str, port443: bool, path: str) -> str:
+        return f"https://{vpn_host(host, vpn, port443)}{path}"
+
+    d = (doi or "").lower()
+    if re.search(r"[一-鿿]", title or ""):
+        return ("中国知网", v("www.cnki.net", True, "/"), False, "在知网按标题搜")
+    if d.startswith("10.1080/"):
+        return ("Taylor & Francis", v("www.tandfonline.com", False, f"/doi/pdf/{q}?download=true"),
+                True, "点一下直接下载 PDF")
+    if d.startswith("10.1016/"):
+        pii = _pii(landing)
+        path = f"/science/article/pii/{pii}" if pii else f"/search?qs={q_all}"
+        return ("ScienceDirect (Elsevier)", v("www.sciencedirect.com", True, path), False,
+                "打开后点 View PDF, 再下载")
+    if d.startswith("10.1108/"):
+        return ("Emerald", v("www.emerald.com", True, f"/insight/content/doi/{q}/full/html"),
+                False, "打开后点 PDF 下载")
+    if d.startswith("10.1007/"):
+        return ("Springer", v("link.springer.com", True, f"/content/pdf/{q}.pdf"), True,
+                "点一下直接下载 PDF; 学校只订了 Springer 电子书, 期刊文章可能没权限")
+    if d.startswith("10.1017/"):
+        return ("Cambridge", v("www.cambridge.org", True, f"/core/search?q={q_all}"), False,
+                "学校订的是剑桥回溯库, 较新的文章可能没权限")
+    if d.startswith("10.1177/"):
+        return ("SAGE (学校镜像平台)", v("sage.cnpereading.com", False, "/"), False,
+                "学校用的是国内镜像平台, 进去按标题搜")
+    if d.startswith(("10.1002/", "10.1111/")):
+        return ("Wiley (学校没订)", v("www.blyun.com", True, "/"), False,
+                "学校没订 Wiley; 在百链按标题搜, 申请邮箱接收全文")
+    if not doi:
+        return ("没有 DOI", v("www.blyun.com", True, "/"), False, "在百链按标题搜")
+    return ("其他", f"https://doi.org/{q}", False,
+            "先直接打开, 很多是开放获取; 打不开就在百链按标题搜")
+
+
+FETCH_ORDER = ["Taylor & Francis", "Springer", "ScienceDirect (Elsevier)", "Emerald", "Cambridge",
+               "SAGE (学校镜像平台)", "中国知网", "Wiley (学校没订)", "其他", "没有 DOI", "未配置 WebVPN"]
+
+
+def write_fetch_list(out: Path, rows: list[dict], vpn: str | None) -> Path:
+    todo = [r for r in rows if not r.get("pdf") and not r.get("seed")]
+    groups: dict[str, list] = {}
+    for r in todo:
+        db, url, direct, note = fetch_link(r.get("doi"), r.get("landing"), r.get("title") or "", vpn)
+        groups.setdefault(db, []).append((r, url, direct, note))
+    order = sorted(groups, key=lambda g: FETCH_ORDER.index(g) if g in FETCH_ORDER else len(FETCH_ORDER))
+    e = html.escape
+    parts = []
+    for db in order:
+        items = groups[db]
+        note = items[0][3]
+        rows_html = []
+        for r, url, direct, _ in items:
+            key = e(r.get("doi") or r.get("oid") or r.get("title") or "")
+            # 平台首页 (知网、SAGE 镜像、百链) 只能进去自己搜, 按钮别写成"打开全文页"
+            label = "下载 PDF" if direct else ("去搜标题" if url.endswith("/") else "打开全文页")
+            link = (f'<a class="go" href="{e(url)}" target="_blank" rel="noopener">{label}</a>'
+                    if url else "")
+            rows_html.append(
+                f'<li><label><input type="checkbox" data-k="{key}"></label>'
+                f'<span class="tier t{e(r.get("tier") or "")}">{e(r.get("tier") or "")}</span>'
+                f'<span class="title">{e(r.get("title") or "")}</span>'
+                f'<span class="year">{e(str(r.get("year") or ""))}</span>'
+                f'<button class="copy" data-t="{e(r.get("title") or "")}">复制标题</button>{link}</li>')
+        parts.append(f'<section><h2>{e(db)} <small>{len(items)} 篇</small></h2>'
+                     f'<p class="note">{e(note)}</p><ol>{"".join(rows_html)}</ol></section>')
+    vpn_text = f"学校 WebVPN ({e(vpn)})" if vpn else "学校 WebVPN"
+    body = "".join(parts) if parts else '<p class="done">清单上的论文都有 PDF 了, 不用再下载.</p>'
+    page = out / FETCH_PAGE
+    page.write_text(f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校外下载清单</title>
+<style>
+:root {{ --ink:#1b1d24; --muted:#636778; --rule:#e3e4ea; --accent:#25408f; --soft:#eef1fa; --bg:#fafafb; }}
+body {{ margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.6 "Microsoft YaHei","PingFang SC",system-ui,sans-serif; }}
+main {{ max-width:900px; margin:0 auto; padding:28px 16px 60px; }}
+h1 {{ font-size:24px; margin:0 0 8px; }}
+.steps {{ background:#fff; border:1px solid var(--rule); border-radius:4px; padding:12px 16px; }}
+.steps ol {{ margin:4px 0; padding-left:20px; }}
+code {{ background:var(--soft); padding:1px 5px; border-radius:3px; }}
+section {{ margin-top:26px; }}
+h2 {{ font-size:18px; margin:0; border-bottom:1px solid var(--rule); padding-bottom:4px; }}
+h2 small {{ color:var(--muted); font-weight:400; font-size:13px; }}
+.note {{ color:var(--muted); margin:6px 0; font-size:13px; }}
+section ol {{ list-style:none; padding:0; margin:0; }}
+section li {{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 0;
+  border-bottom:1px solid var(--rule); }}
+section li.done .title {{ color:var(--muted); text-decoration:line-through; }}
+.title {{ flex:1 1 18em; min-width:0; overflow-wrap:anywhere; }}
+.year {{ color:var(--muted); font-size:13px; }}
+.tier {{ font:600 12px/1 monospace; padding:3px 5px; border-radius:2px; background:var(--soft); color:var(--accent); }}
+.tS {{ background:var(--accent); color:#fff; }}
+.go {{ background:var(--accent); color:#fff; text-decoration:none; padding:4px 10px; border-radius:3px;
+  white-space:nowrap; font-size:13px; }}
+.copy {{ border:1px solid var(--rule); background:#fff; border-radius:3px; padding:3px 8px; font-size:12px; cursor:pointer; }}
+.done {{ font-size:16px; }}
+</style></head><body><main>
+<h1>校外下载清单</h1>
+<div class="steps"><ol>
+<li>先在这个浏览器里登录{vpn_text}</li>
+<li>逐个点右边的按钮. 「下载 PDF」点一下就下好了; 「打开全文页」进去后点页面上的 PDF 下载. 点完勾上左边的框</li>
+<li>全部下完, 在 PowerShell 里运行 <code>{PY} paperkit.py attach</code>, 按提示把 PDF 一次性挂到 Zotero 的条目上</li>
+</ol></div>
+{body}
+</main>
+<script>
+(function () {{
+  var KEY = "paperkit-fetch";
+  var state = {{}};
+  try {{ state = JSON.parse(localStorage.getItem(KEY) || "{{}}") || {{}}; }} catch (e) {{}}
+  document.querySelectorAll("input[data-k]").forEach(function (box) {{
+    var li = box.closest("li");
+    if (state[box.dataset.k]) {{ box.checked = true; li.classList.add("done"); }}
+    box.addEventListener("change", function () {{
+      state[box.dataset.k] = box.checked;
+      li.classList.toggle("done", box.checked);
+      try {{ localStorage.setItem(KEY, JSON.stringify(state)); }} catch (e) {{}}
+    }});
+  }});
+  document.querySelectorAll("button.copy").forEach(function (b) {{
+    b.addEventListener("click", function () {{
+      var t = b.dataset.t;
+      var ok = function () {{ b.textContent = "已复制"; setTimeout(function () {{ b.textContent = "复制标题"; }}, 1500); }};
+      if (navigator.clipboard) {{ navigator.clipboard.writeText(t).then(ok, function () {{ window.prompt("复制这个标题:", t); }}); }}
+      else {{ window.prompt("复制这个标题:", t); }}
+    }});
+  }});
+}})();
+</script></body></html>
+""", encoding="utf-8")
+    return page
+
+
+def doi_from_filename(name: str) -> str | None:
+    """Emerald 等出版社的下载文件名里编码了 DOI: 10-1108_IJCHM-01-2019-0063.pdf."""
+    m = re.match(r"^10[-.](\d{4,9})[_@](.+)$", Path(name).stem)
+    return _clean_doi(f"10.{m.group(1)}/{m.group(2)}".encode()) if m else None
+
+
+def copy_to_clipboard(text: str) -> bool:
+    if sys.platform != "win32":
+        return False
+    import subprocess
+    try:
+        subprocess.run(["clip"], input=text.encode("ascii", "replace"), check=True, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def _safe_name(title: str) -> str:
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title or "paper")
+    s = re.sub(r"\s+", " ", s).strip().rstrip(". ")
+    return (s[:80].rsplit(" ", 1)[0] if len(s) > 80 else s) or "paper"
+
+
+def attach_script(files: list[dict]) -> str:
+    """在 Zotero 的「执行 JavaScript」里运行. 全部是 ASCII (中文用 \\u 转义), 复制粘贴不会乱码;
+    自己是一个立即执行的 async 函数, 勾不勾「作为异步函数执行」都能跑, 结果用弹窗显示."""
+    j = lambda x: json.dumps(x, ensure_ascii=True)
+    return f"""// paperkit: attach downloaded PDFs to the matching existing Zotero items.
+// Matches by DOI first, then by title. Items that already have a PDF are skipped,
+// so it is safe to run again.
+(async () => {{
+  const files = {j(files)};
+  const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9\\u4e00-\\u9fff]+/g, "");
+  const cleanDoi = s => (s || "").trim().toLowerCase().replace(/^https?:\\/\\/(dx\\.)?doi\\.org\\//, "");
+  try {{
+    const all = await Zotero.Items.getAll(Zotero.Libraries.userLibraryID, true);
+    const byDoi = new Map(), byTitle = new Map();
+    for (const it of all) {{
+      if (!it.isRegularItem() || it.deleted) continue;
+      let doi = "";
+      try {{ doi = it.getField("DOI") || ""; }} catch (e) {{}}
+      if (!doi) {{
+        const m = /DOI:\\s*(\\S+)/i.exec(it.getField("extra") || "");
+        if (m) doi = m[1];
+      }}
+      if (doi) byDoi.set(cleanDoi(doi), it);
+      byTitle.set(norm(it.getField("title")), it);
+    }}
+    let added = 0, skipped = 0;
+    const missing = [];
+    for (const f of files) {{
+      const it = (f.doi && byDoi.get(cleanDoi(f.doi))) || byTitle.get(norm(f.title));
+      if (!it) {{ missing.push(f.title); continue; }}
+      const hasPdf = it.getAttachments().some(id => {{
+        const a = Zotero.Items.get(id);
+        return a && a.isPDFAttachment();
+      }});
+      if (hasPdf) {{ skipped++; continue; }}
+      if (!Zotero.File.pathToFile(f.path).exists()) {{ missing.push(f.title); continue; }}
+      await Zotero.Attachments.importFromFile({{ file: f.path, parentItemID: it.id }});
+      added++;
+    }}
+    let msg = {j("挂上 ")} + added + {j(" 篇, 已有 PDF 跳过 ")} + skipped + {j(" 篇.")};
+    if (missing.length) msg += "\\n\\n" + {j("在 Zotero 里没找到这几条 (可能还没导入):")} + "\\n" + missing.join("\\n");
+    Zotero.alert(null, "paperkit", msg);
+  }} catch (e) {{
+    Zotero.alert(null, {j("paperkit 出错")}, String(e));
+  }}
+}})();
+"""
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    out = Path(args.out).expanduser()
+    res = out / "paperkit-result.json"
+    if not res.exists():
+        log(f"× 找不到 {res}, 先跑 discover")
+        return 1
+    rows = json.loads(res.read_text(encoding="utf-8"))
+    src = Path(args.from_dir).expanduser() if args.from_dir else downloads_dir()
+    if not src.is_dir():
+        log(f"× 文件夹不存在: {src}")
+        return 1
+
+    by_doi = {r["doi"].lower(): r for r in rows if r.get("doi")}
+    titled = [(norm_title(r.get("title") or ""), r) for r in rows]
+    pdfs = sorted(p for p in src.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+    log(f"→ 在 {src} 里检查 {len(pdfs)} 个 PDF …")
+    done: set[str] = set()
+    files: list[dict] = []
+    for p in pdfs:
+        ids = pdf_identifiers(p)
+        doi = ids["doi"] or doi_from_filename(p.name)
+        row = by_doi.get(doi) if doi else None
+        if not row:
+            want = norm_title(ids["title"] or _title_from_filename(p) or p.stem)
+            best = max(titled, key=lambda x: title_overlap(want, x[0]), default=None)
+            if best and title_overlap(want, best[0]) >= 0.6:
+                row = best[1]
+        if not row or row.get("oid") in done:
+            continue
+        done.add(row.get("oid"))
+        dest = out / TIER_DIRS.get(row.get("tier"), TIER_DIRS["B"]) / f"{_safe_name(row.get('title'))}.pdf"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            shutil.copy2(p, dest)
+        row["pdf"] = str(dest.resolve())
+        files.append({"doi": (row.get("doi") or "").lower(), "title": row.get("title") or "",
+                      "path": str(dest.resolve())})
+        log(f"  ✓ {p.name} → {row.get('title', '')[:60]}")
+
+    if not files:
+        log(f"× 在 {src} 里没找到清单上的论文. 下载的 PDF 在别的文件夹的话, 加 --from 「文件夹路径」")
+        return 1
+    res.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    script = out / ATTACH_SCRIPT
+    js = attach_script(files)
+    script.write_text(js, encoding="ascii")
+    copied = copy_to_clipboard(js)
+    log("")
+    log(f"认出 {len(files)} 篇, 已复制到 {out} 的各分级文件夹 (下载文件夹里的原文件没动).")
+    log(f"已生成 Zotero 脚本: {script}" + (" (已复制到剪贴板)" if copied else ""))
+    log("下一步: Zotero → 工具 → 开发者 → 执行 JavaScript → "
+        + ("Ctrl+V 粘贴" if copied else "用记事本打开上面那个文件, 全选复制, 粘贴进去") + " → 点「执行」.")
+    log("弹窗会告诉你挂上了几篇. 已经有 PDF 的条目会跳过, 可以放心重复运行.")
+    return 0
+
+
+def cmd_fetchlist(args: argparse.Namespace) -> int:
+    out = Path(args.out).expanduser()
+    res = out / "paperkit-result.json"
+    if not res.exists():
+        log(f"× 找不到 {res}, 先跑 discover")
+        return 1
+    page = write_fetch_list(out, json.loads(res.read_text(encoding="utf-8")), load_config().get("webvpn"))
+    log(f"✓ {page}")
+    if args.open and sys.platform == "win32":
+        import subprocess
+        try:
+            subprocess.run(["cmd", "/c", "start", "", "msedge", str(page.resolve())], check=True, timeout=10)
+        except Exception:
+            os.startfile(str(page.resolve()))  # type: ignore[attr-defined]
+    return 0
+
+
+# --------------------------------------------------------------------------
 # discover: 主流程
 # --------------------------------------------------------------------------
 
@@ -2849,6 +3171,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
                     "oid": p.oid, "title": p.title, "year": p.year, "doi": p.doi,
                     "tier": p.tier, "score": p.score, "reasons": p.reasons,
                     "cited_by": p.cited_by, "pdf": p.pdf_path, "seed": p.is_seed,
+                    "landing": p.landing, "venue": p.venue,
                 }
                 for p in final
             ],
@@ -2857,6 +3180,13 @@ def cmd_discover(args: argparse.Namespace) -> int:
         ),
         encoding="utf-8",
     )
+
+    rows = json.loads((out / "paperkit-result.json").read_text(encoding="utf-8"))
+    page = write_fetch_list(out, rows, load_config().get("webvpn"))
+    missing = sum(1 for r in rows if not r.get("pdf") and not r.get("seed"))
+    if missing:
+        log(f"  ✓ 校外下载清单: {missing} 篇还没有 PDF → {page}")
+        log(f"    用 Edge 打开它逐个点, 下完运行 {PY} paperkit.py attach 挂到 Zotero")
 
     log("")
     log(f"完成. OpenAlex 请求 {client.calls} 次. 产物在 {out}")
@@ -2968,6 +3298,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     i.add_argument("--skip-zotero", action="store_true", help="不管 Zotero 那边")
     i.set_defaults(func=cmd_install)
 
+    fl = sub.add_parser("fetchlist", help="重新生成校外下载清单 (不联网)")
+    fl.add_argument("--out", default="papers", help="discover 的输出目录 (默认 papers)")
+    fl.add_argument("--open", action="store_true", help="生成后用 Edge 打开")
+    fl.set_defaults(func=cmd_fetchlist)
+
+    at = sub.add_parser("attach", help="把下载好的 PDF 挂到 Zotero 已有条目上")
+    at.add_argument("--from", dest="from_dir", help="PDF 所在文件夹 (默认: 下载文件夹)")
+    at.add_argument("--out", default="papers", help="discover 的输出目录 (默认 papers)")
+    at.set_defaults(func=cmd_attach)
+
     o = sub.add_parser("outline", help="按主题分节生成文献综述大纲 (不联网)")
     o.add_argument("--vault", required=True, help="Obsidian 库根目录")
     o.add_argument("--themes", help="分节规则文件 (默认 paperkit.py 旁边的 themes.txt)")
@@ -2980,6 +3320,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     c = sub.add_parser("config", help="记住邮箱等设置")
     c.add_argument("--mailto", help="你的邮箱, 用于 OpenAlex 礼貌池")
+    c.add_argument("--webvpn", help="学校 WebVPN 域名, 例: web.bisu.edu.cn")
     c.set_defaults(func=cmd_config)
 
     k = sub.add_parser("doctor", help="体检: 检查插件/模板/Zotero 连接是否到位")

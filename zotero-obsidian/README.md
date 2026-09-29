@@ -180,6 +180,34 @@ py -3 paperkit.py outline --vault "你的库路径"
 
 研究方法类（M 级）不进矩阵和统计。
 
+## 在校外下载 PDF（学校 WebVPN）
+
+Zotero 桌面端的「查找可用的 PDF」直接联网下载，不走 WebVPN，也用不上浏览器里的登录状态，
+所以在校外只能下到开放获取的。paperkit 把剩下的做成半自动：
+
+```powershell
+py -3 paperkit.py config --webvpn web.bisu.edu.cn      # 一次性: 学校 WebVPN 的域名
+```
+
+之后每次 `discover` 都会在输出目录生成 **`校外下载清单.html`**：还没有 PDF 的论文按数据库分组，
+每篇一个经 WebVPN 的直达链接。Taylor & Francis、Springer 点一下直接下载 PDF；ScienceDirect、
+Emerald 点开是全文页；SAGE（学校走国内镜像）、知网、Wiley（没订，走百链文献传递）点开是平台，
+按标题搜。链接只用学校门户里列出的数据库（`doi.org` 经 WebVPN 打不开），地址改写规则
+（原有横杠变双横杠、点变横杠、https 多为 `-443`）照学校门户逐条校验过。
+
+下完后：
+
+```powershell
+py -3 paperkit.py attach          # 默认扫描「下载」文件夹; 别的位置加 --from "文件夹"
+```
+
+它按 PDF 里的 DOI（认不出就按标题）找到对应论文，复制进各分级文件夹，生成一段 Zotero 脚本并复制到
+剪贴板。在 Zotero → 工具 → 开发者 → 执行 JavaScript 里粘贴、执行，所有 PDF 一次挂到已有条目上，
+不会产生重复条目；已经有 PDF 的条目跳过，可以重复运行。脚本全是 ASCII，勾不勾「作为异步函数执行」
+都能跑，这一点用 Node 按 Zotero 的两种执行方式真实跑过。
+
+`fetchlist --open` 可以不联网重新生成清单并用 Edge 打开。
+
 ## 写论文时插引用
 
 1. Word 顶部有 `Zotero` 选项卡说明插件已装好；没有的话：Zotero → 编辑 → 设置 → 引用 → 文字处理软件 →
@@ -260,7 +288,7 @@ py -3 paperkit.py outline --vault "你的库路径"
 python3 -m unittest test_paperkit -v
 ```
 
-169 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
+207 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
 
 - **discover**：用按 OpenAlex 官方字段结构伪造的假 API 跑通整条流水线，
   覆盖打分排序、分级、RIS 格式、YAML 注入、重跑幂等、种子解析失败的降级，

@@ -5,6 +5,7 @@ discover 流水线跑通: 打分/分级/RIS/笔记/地图 全部走真代码路�
 """
 
 import json
+import shutil
 import unittest.mock
 import re
 import sys
@@ -2302,3 +2303,273 @@ class TestNewLiteratureTracking(unittest.TestCase):
         recent = news.split("## 最近")[1]
         self.assertIn("Follow Up Citing Both Seeds", recent)   # 2024 年, 引用了两篇种子
         self.assertNotIn("Foundational Work", recent)           # 2015 年的上游文献不算
+
+
+# --------------------------------------------------------------------------
+# 校外下载清单 + 把下载的 PDF 挂到 Zotero 已有条目上
+# --------------------------------------------------------------------------
+
+VPN = "web.bisu.edu.cn"
+
+
+class TestWebVpnRewrite(unittest.TestCase):
+    """规则按用户贴的学校门户列表逐条校验."""
+
+    def test_matches_the_school_portal(self):
+        cases = [
+            ("www.sciencedirect.com", True, "www-sciencedirect-com-443.web.bisu.edu.cn"),
+            ("www.e-unwto.org", True, "www-e--unwto-org-443.web.bisu.edu.cn"),
+            ("www.tandfonline.com", False, "www-tandfonline-com.web.bisu.edu.cn"),
+            ("link.springer.com", True, "link-springer-com-443.web.bisu.edu.cn"),
+            ("sage.cnpereading.com", False, "sage-cnpereading-com.web.bisu.edu.cn"),
+        ]
+        for host, port, want in cases:
+            self.assertEqual(pk.vpn_host(host, VPN, port), want)
+
+
+class TestFetchLinks(unittest.TestCase):
+    def link(self, doi, landing=None, title="A Paper Title", vpn=VPN):
+        return pk.fetch_link(doi, landing, title, vpn)
+
+    def test_taylor_francis_downloads_the_pdf_directly(self):
+        db, url, direct, _ = self.link("10.1080/13683500.2020.1234567")
+        self.assertEqual(db, "Taylor & Francis")
+        self.assertEqual(url, "https://www-tandfonline-com.web.bisu.edu.cn/doi/pdf/"
+                              "10.1080/13683500.2020.1234567?download=true")
+        self.assertTrue(direct)
+
+    def test_elsevier_uses_the_pii_when_known_else_searches_the_doi(self):
+        _, url, direct, _ = self.link("10.1016/j.tourman.2013.03.008",
+                                      "https://www.sciencedirect.com/science/article/pii/S0261517713000691")
+        self.assertEqual(url, "https://www-sciencedirect-com-443.web.bisu.edu.cn/science/article/pii/S0261517713000691")
+        self.assertFalse(direct)
+        _, url, _, _ = self.link("10.1016/j.tourman.2013.03.008", "https://doi.org/10.1016/j.tourman.2013.03.008")
+        self.assertEqual(url, "https://www-sciencedirect-com-443.web.bisu.edu.cn/search?qs=10.1016%2Fj.tourman.2013.03.008")
+
+    def test_emerald_and_springer(self):
+        db, url, _, _ = self.link("10.1108/IJCHM-01-2019-0063")
+        self.assertEqual(db, "Emerald")
+        self.assertEqual(url, "https://www-emerald-com-443.web.bisu.edu.cn/insight/content/doi/10.1108/IJCHM-01-2019-0063/full/html")
+        db, url, direct, note = self.link("10.1007/s11135-020-01000-1")
+        self.assertEqual(url, "https://link-springer-com-443.web.bisu.edu.cn/content/pdf/10.1007/s11135-020-01000-1.pdf")
+        self.assertTrue(direct)
+        self.assertIn("电子书", note)
+
+    def test_unsubscribed_or_mirrored_publishers_point_to_title_search(self):
+        db, url, direct, note = self.link("10.1177/0047287510362918")
+        self.assertIn("SAGE", db)
+        self.assertEqual(url, "https://sage-cnpereading-com.web.bisu.edu.cn/")
+        self.assertIn("标题", note)
+        db, url, _, note = self.link("10.1002/jtr.2117")
+        self.assertIn("Wiley", db)
+        self.assertIn("blyun", url)
+        self.assertIn("邮箱", note)
+
+    def test_chinese_paper_goes_to_cnki(self):
+        db, url, _, _ = self.link("10.70693/rwsk.v1i8.1274", title="中小型主题公园的服务质量研究")
+        self.assertIn("知网", db)
+        self.assertEqual(url, "https://www-cnki-net-443.web.bisu.edu.cn/")
+
+    def test_unknown_publisher_tries_the_doi_directly(self):
+        db, url, _, note = self.link("10.3390/su10103409")
+        self.assertEqual(url, "https://doi.org/10.3390/su10103409")
+        self.assertIn("开放获取", note)
+
+    def test_without_webvpn_everything_uses_the_doi(self):
+        db, url, _, note = self.link("10.1080/1368.1", vpn=None)
+        self.assertEqual(url, "https://doi.org/10.1080/1368.1")
+        self.assertIn("webvpn", note.lower())
+
+    def test_special_characters_in_doi_are_escaped(self):
+        _, url, _, _ = self.link("10.1080/abc(12)<x>")
+        self.assertNotIn("<", url)
+        self.assertIn("/doi/pdf/10.1080/", url)
+
+
+def result_rows():
+    return [
+        {"oid": "W1", "title": "Seed paper", "doi": "10.1080/seed1", "tier": "S", "seed": True, "pdf": None},
+        {"oid": "W2", "title": "Theme park satisfaction study", "doi": "10.1080/tp.2020.1",
+         "tier": "S", "seed": False, "pdf": None, "year": 2020, "landing": None},
+        {"oid": "W3", "title": "Servicescape and experience quality", "doi": "10.1016/j.tm.2019.2",
+         "tier": "A", "seed": False, "pdf": None, "year": 2019,
+         "landing": "https://www.sciencedirect.com/science/article/pii/S0261517719000001"},
+        {"oid": "W4", "title": "Already downloaded one", "doi": "10.3390/su1", "tier": "B",
+         "seed": False, "pdf": "/x/y.pdf", "year": 2018, "landing": None},
+        {"oid": "W5", "title": "Brand <loyalty> & \"quotes\"", "doi": "10.1108/IJCHM-1",
+         "tier": "B", "seed": False, "pdf": None, "year": 2017, "landing": None},
+    ]
+
+
+class TestFetchListPage(unittest.TestCase):
+    def test_page_lists_only_missing_non_seed_papers_grouped_by_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            page = pk.write_fetch_list(out, result_rows(), VPN)
+            text = page.read_text(encoding="utf-8")
+            self.assertIn("Theme park satisfaction study", text)
+            self.assertIn("Servicescape and experience quality", text)
+            self.assertNotIn("Seed paper", text)             # 种子自己有
+            self.assertNotIn("Already downloaded one", text)  # 已经有 PDF
+            for db in ("Taylor &amp; Francis", "ScienceDirect", "Emerald"):
+                self.assertIn(db, text)
+            self.assertIn("Brand &lt;loyalty&gt; &amp; &quot;quotes&quot;", text)   # 标题转义
+            self.assertIn("attach", text)                     # 下完怎么挂到 Zotero
+            self.assertIn("web.bisu.edu.cn", text)
+            self.assertIn(">下载 PDF<", text)        # T&F 直接下载
+            self.assertIn(">打开全文页<", text)      # Elsevier 全文页
+
+    def test_platform_home_links_say_search_not_full_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [{"oid": "W9", "title": "A SAGE paper here", "doi": "10.1177/abc1",
+                     "tier": "A", "seed": False, "pdf": None}]
+            text = pk.write_fetch_list(Path(tmp), rows, VPN).read_text(encoding="utf-8")
+            self.assertIn(">去搜标题<", text)
+            self.assertNotIn(">打开全文页<", text)
+
+    def test_nothing_missing_writes_a_short_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [r for r in result_rows() if r["pdf"] or r.get("seed")]
+            text = pk.write_fetch_list(Path(tmp), rows, VPN).read_text(encoding="utf-8")
+            self.assertIn("都有 PDF", text)
+
+
+class TestFilenameDoi(unittest.TestCase):
+    def test_emerald_style_filenames_encode_the_doi(self):
+        self.assertEqual(pk.doi_from_filename("10-1108_IJCHM-01-2019-0063.pdf"), "10.1108/ijchm-01-2019-0063")
+        self.assertEqual(pk.doi_from_filename("10.1080@13683500.2020.1234567.pdf"), "10.1080/13683500.2020.1234567")
+        self.assertIsNone(pk.doi_from_filename("Some Title.pdf"))
+
+
+NODE_ZOTERO_HARNESS = r"""
+const fs = require("fs");
+const [scriptPath, mode] = process.argv.slice(1);
+const imports = [];
+let alertText = null;
+const mk = (id, fields, attachments) => ({
+  id, deleted: false, isRegularItem: () => true,
+  getField: f => fields[f] || "", getAttachments: () => attachments,
+});
+const items = [
+  mk(101, { DOI: "https://doi.org/10.1080/TP.2020.1", title: "Theme park satisfaction study" }, []),
+  mk(102, { DOI: "10.1016/j.tm.2019.2", title: "Servicescape and experience quality" }, [900]),
+  mk(103, { title: 'Brand <loyalty> & "quotes"', extra: "" }, []),
+];
+global.Zotero = {
+  Libraries: { userLibraryID: 1 },
+  Items: {
+    getAll: async (lib, topLevel) => items,
+    get: id => (id === 900 ? { isPDFAttachment: () => true } : null),
+  },
+  File: { pathToFile: p => ({ exists: () => fs.existsSync(p) }) },
+  Attachments: { importFromFile: async o => { imports.push(o); } },
+  alert: (win, title, msg) => { alertText = msg; },
+};
+let code = fs.readFileSync(scriptPath, "utf8");
+(async () => {
+  if (mode === "async") { code = "(async function () {" + code + "})()"; await eval(code); }
+  else { eval(code); }
+  for (let i = 0; i < 100 && alertText === null; i++) await new Promise(r => setTimeout(r, 10));
+  process.stdout.write(JSON.stringify({ imports, alert: alertText }));
+})();
+"""
+
+
+class TestAttachCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.out = self.root / "papers"
+        self.out.mkdir()
+        (self.out / "paperkit-result.json").write_text(json.dumps(result_rows()), encoding="utf-8")
+        self.dl = self.root / "Downloads"
+        make_pdf(self.dl / "tandf_download.pdf", xmp=b"<prism:doi>10.1080/tp.2020.1</prism:doi>")
+        make_pdf(self.dl / "1-s2.0-S0261517719000001-main.pdf", xmp=b"<prism:doi>10.1016/j.tm.2019.2</prism:doi>")
+        make_pdf(self.dl / "Brand loyalty and quotes.pdf", info=b'/Title (Brand <loyalty> & "quotes")')
+        make_pdf(self.dl / "unrelated invoice.pdf", xmp=b"<prism:doi>10.9999/other1</prism:doi>")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def attach(self):
+        from unittest import mock
+        with mock.patch.object(pk, "copy_to_clipboard", lambda text: True):
+            return pk.main(["attach", "--from", str(self.dl), "--out", str(self.out)])
+
+    def test_matches_by_doi_and_title_and_copies_into_tier_folders(self):
+        self.assertEqual(self.attach(), 0)
+        rows = {r["oid"]: r for r in json.loads((self.out / "paperkit-result.json").read_text(encoding="utf-8"))}
+        for oid in ("W2", "W3", "W5"):
+            self.assertTrue(rows[oid]["pdf"], oid)
+            self.assertTrue(Path(rows[oid]["pdf"]).exists(), oid)
+        self.assertIn("S-核心必读", rows["W2"]["pdf"])
+        self.assertTrue((self.dl / "tandf_download.pdf").exists())   # 复制, 不动原文件
+
+    def test_generated_zotero_script_is_ascii_and_carries_the_mapping(self):
+        self.attach()
+        js = (self.out / pk.ATTACH_SCRIPT).read_text(encoding="ascii")
+        self.assertIn("Zotero.Attachments.importFromFile", js)
+        self.assertIn("Zotero.alert", js)
+        payload = json.loads(re.search(r"const files = (\[.*?\]);", js, re.S).group(1))
+        self.assertEqual({f["doi"] for f in payload}, {"10.1080/tp.2020.1", "10.1016/j.tm.2019.2", "10.1108/ijchm-1"})
+        self.assertTrue(all(Path(f["path"]).exists() for f in payload))
+
+    @unittest.skipUnless(shutil.which("node"), "需要 node 来真正执行生成的脚本")
+    def test_script_really_runs_in_both_zotero_run_js_modes(self):
+        """按 Zotero runJS.js 的两种方式真正执行: 不勾 = win.eval(code);
+        勾选"作为异步函数执行" = win.eval('(async function () {' + code + '})()')."""
+        import subprocess
+        self.attach()
+        script = self.out / pk.ATTACH_SCRIPT
+        rows = json.loads((self.out / "paperkit-result.json").read_text(encoding="utf-8"))
+        pdf_w2 = next(r["pdf"] for r in rows if r["oid"] == "W2")
+        for mode in ("none", "async"):
+            proc = subprocess.run(["node", "-e", NODE_ZOTERO_HARNESS, str(script), mode],
+                                  capture_output=True, text=True, timeout=30)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            got = json.loads(proc.stdout)
+            imported = {c["parentItemID"]: c["file"] for c in got["imports"]}
+            self.assertEqual(set(imported), {101, 103}, mode)   # 101 按 DOI, 103 按标题
+            self.assertEqual(imported[101], pdf_w2)
+            self.assertNotIn(102, imported)                      # 已经有 PDF, 跳过
+            self.assertIn("挂上 2 篇", got["alert"], mode)
+            self.assertIn("跳过 1 篇", got["alert"], mode)
+
+    def test_no_matching_pdfs_is_reported_clearly(self):
+        empty = self.root / "empty"; empty.mkdir()
+        from unittest import mock
+        with mock.patch.object(pk, "copy_to_clipboard", lambda text: True):
+            rc = pk.main(["attach", "--from", str(empty), "--out", str(self.out)])
+        self.assertEqual(rc, 1)
+
+    def test_missing_result_file_fails_clearly(self):
+        from unittest import mock
+        with mock.patch.object(pk, "copy_to_clipboard", lambda text: True):
+            rc = pk.main(["attach", "--from", str(self.dl), "--out", str(self.root / "nope")])
+        self.assertEqual(rc, 1)
+
+
+class TestWebVpnConfig(unittest.TestCase):
+    def test_config_saves_webvpn_host(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "c.json"
+            with mock.patch.object(pk, "CONFIG_PATH", cfg):
+                self.assertEqual(pk.main(["config", "--webvpn", "https://Web.BISU.edu.cn/"]), 0)
+                self.assertEqual(pk.load_config()["webvpn"], "web.bisu.edu.cn")
+                self.assertEqual(pk.main(["config", "--webvpn", "not a host"]), 1)
+
+
+class TestDiscoverWritesFetchList(unittest.TestCase):
+    def test_discover_leaves_a_fetch_list_next_to_the_pdfs(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seeds = root / "s.txt"; seeds.write_text("10.1000/seed1\n", encoding="utf-8")
+            with mock.patch.object(pk, "Client", lambda **kw: FakeClient()), \
+                 mock.patch.object(pk, "load_config", lambda: {"webvpn": VPN}):
+                pk.main(["discover", "--seeds", str(seeds), "--out", str(root / "o"), "--no-pdf"])
+            page = root / "o" / pk.FETCH_PAGE
+            self.assertTrue(page.exists())
+            rows = json.loads((root / "o" / "paperkit-result.json").read_text(encoding="utf-8"))
+            self.assertIn("landing", rows[0])
