@@ -1940,16 +1940,20 @@ def cmd_discover(args: argparse.Namespace) -> int:
     seed_titles = {s.oid: f"[[{s.slug()}]]" for s in seeds}
     if vault:
         notes_root = vault / "10-文献笔记"
-        n = 0
+        n = kept = 0
         for p in final:
             folder = notes_root / TIER_DIRS[p.tier]
             folder.mkdir(parents=True, exist_ok=True)
             target = folder / f"{p.slug()}.md"
             if target.exists() and not args.force:
+                kept += 1
                 continue
             target.write_text(render_note(p, seed_titles), encoding="utf-8")
             n += 1
-        log(f"  ✓ 写入 {n} 篇 Obsidian 文献笔记 → {notes_root}")
+        msg = f"  ✓ 新写入 {n} 篇 Obsidian 文献笔记"
+        if kept:
+            msg += f", {kept} 篇已存在没动 (你可能已经在上面写了东西; 要重建加 --force)"
+        log(f"{msg} → {notes_root}")
 
         (vault / "30-论文地图" / "主题地图.md").write_text(
             render_map(seeds, final), encoding="utf-8"

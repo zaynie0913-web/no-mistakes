@@ -1518,3 +1518,23 @@ class TestPdfYieldAfterFirstRealRun(unittest.TestCase):
         self.assertIn("没有开放获取", line)
         self.assertIn("跳过 2 篇种子", line)  # --have-seeds 主动跳过, 不能算成"没有开放获取"
         self.assertIn("查找可用的 PDF", out)  # 告诉用户 Zotero 能接着抓
+
+
+class TestRerunNoteMessage(unittest.TestCase):
+    def test_rerun_says_notes_were_kept_not_that_zero_were_written(self):
+        import io
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "v"; vault.mkdir()
+            seeds = root / "s.txt"; seeds.write_text("10.1000/seed1\n", encoding="utf-8")
+            argv = ["discover", "--seeds", str(seeds), "--out", str(root / "o"),
+                    "--vault", str(vault), "--no-pdf"]
+            with mock.patch.object(pk, "Client", lambda **kw: FakeClient()):
+                pk.main(argv)
+                buf = io.StringIO()
+                with mock.patch.object(pk.sys, "stderr", buf):
+                    pk.main(argv)
+        line = next(l for l in buf.getvalue().splitlines() if "文献笔记" in l)
+        self.assertNotIn("写入 0 篇", line)
+        self.assertIn("已存在", line)
