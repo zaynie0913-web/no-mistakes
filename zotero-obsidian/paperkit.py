@@ -48,6 +48,17 @@ TIERS = [
 TIER_DIRS = dict(TIERS)
 
 
+def script_id() -> str:
+    """版本指纹: 文件内容的 sha256 前 8 位. 不用手动维护版本号,
+    对一下就知道用户跑的是不是最新下载的那份."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
+    except OSError:
+        return "unknown"
+
+
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -1996,6 +2007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="paperkit", description="Zotero + Obsidian 论文流水线"
     )
+    ap.add_argument("--version", action="version", version=f"paperkit {script_id()}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("setup", help="铺好 Obsidian 库结构和模板")
@@ -2044,6 +2056,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # 宁可显示成问号也不能让整个流程崩在一行日志上.
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(errors="replace")
+    log(f"paperkit {script_id()}")
     try:
         return args.func(args)
     except KeyboardInterrupt:

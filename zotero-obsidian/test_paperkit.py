@@ -1405,3 +1405,29 @@ class TestTitleSearchNeedsARealMatch(unittest.TestCase):
         a = pk.norm_title("基于图神经网络的交通流预测研究")
         b = pk.norm_title("基于图神经网络的交通流预测")
         self.assertGreater(pk.title_overlap(a, b), 0.8)
+
+
+class TestVersionFingerprint(unittest.TestCase):
+    """用户跑了旧版却看不出来. 指纹由文件内容算出, 不用每次手动改版本号."""
+
+    def test_fingerprint_is_derived_from_file_content(self):
+        import hashlib
+        want = hashlib.sha256(Path(pk.__file__).read_bytes()).hexdigest()[:8]
+        self.assertEqual(pk.script_id(), want)
+
+    def test_version_flag_prints_it(self):
+        import io
+        from unittest import mock
+        out = io.StringIO()
+        with mock.patch.object(pk.sys, "stdout", out), self.assertRaises(SystemExit) as cm:
+            pk.main(["--version"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn(pk.script_id(), out.getvalue())
+
+    def test_every_command_announces_its_version(self):
+        import io
+        from unittest import mock
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(pk.sys, "stderr", buf):
+            pk.main(["seeds", "--from-pdfs", tmp, "--out", str(Path(tmp) / "s.txt")])
+        self.assertIn(f"paperkit {pk.script_id()}", buf.getvalue().splitlines()[0])
