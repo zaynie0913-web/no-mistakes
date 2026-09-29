@@ -1950,11 +1950,17 @@ def cmd_discover(args: argparse.Namespace) -> int:
                 continue
             target.write_text(render_note(p, seed_titles), encoding="utf-8")
             n += 1
-        msg = f"  ✓ 新写入 {n} 篇 Obsidian 文献笔记"
-        if kept:
-            msg += f", {kept} 篇已存在没动 (你可能已经在上面写了东西; 要重建加 --force)"
-        log(f"{msg} → {notes_root}")
+        why = "(你可能已经在上面写了东西; 要重建加 --force)"
+        if n and kept:
+            msg = f"新写入 {n} 篇 Obsidian 文献笔记, {kept} 篇已存在没动 {why}"
+        elif kept:
+            msg = f"{kept} 篇 Obsidian 文献笔记已存在, 都没动 {why}"
+        else:
+            msg = f"写入 {n} 篇 Obsidian 文献笔记"
+        log(f"  ✓ {msg} → {notes_root}")
 
+        # 没跑过 setup 的库没有这个目录; 前面的活都干完了, 不能在最后一步崩掉.
+        (vault / "30-论文地图").mkdir(parents=True, exist_ok=True)
         (vault / "30-论文地图" / "主题地图.md").write_text(
             render_map(seeds, final), encoding="utf-8"
         )
