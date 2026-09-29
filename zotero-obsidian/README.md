@@ -133,6 +133,35 @@ py -3 paperkit.py config --mailto 你的邮箱
 存在 `paperkit.py` 旁边的 `paperkit.json` 里，只在你自己电脑上。之后 `discover`
 自动使用，不用每次加 `--mailto`。优先级：命令行参数 > 环境变量 `PAPERKIT_MAILTO` > 配置文件。
 
+## 文献综述大纲
+
+`discover` 结束时（或随时单独运行 `outline`，不联网）会按主题把论文分节，生成两篇笔记：
+
+- **`30-论文地图/文献综述大纲.md`**：每节一张 Dataview 实时表格，列出文献、年份、分级、阅读状态。
+  笔记里的 `status` 改成「已读」，表格跟着变。每次运行都会重新生成，别在里面写东西
+- **`30-论文地图/文献综述草稿.md`**：同样的分节，每节链到大纲里对应的文献表，下面留给你写。
+  **只在第一次生成，之后不会覆盖**
+
+分节规则在 `paperkit.py` 旁边的 `themes.txt`，一行一节：
+
+```
+主题公园与娱乐体验: theme park, amusement park, themed, entertainment, 主题公园
+城市与地方品牌: branding, brand, 品牌
+满意、忠诚与重游意愿: revisit, loyalty, satisfaction, 重游, 满意
+```
+
+从上往下，标题命中哪一节的关键词就归哪一节（第一个命中的算）；标题都没命中再看摘要；
+还没命中的进「未归类」。所以具体的主题放上面、宽泛的放下面。英文关键词按词开头匹配
+（`brand` 命中 `branding`），中文按字面匹配。M 级论文固定归「研究方法」。
+
+没有 `themes.txt` 时，会按标题里的高频词组自动起草一份，改名、调整后重跑 `outline` 即可。
+`examples/themes-theme-park.txt` 是按一份旅游管理（主题公园、满意度、重游意愿）的真实结果
+校准过的示例。
+
+```powershell
+py -3 paperkit.py outline --vault "你的库路径"
+```
+
 ## 分级是怎么算的
 
 候选集从三个方向采集：种子的**参考文献**（领域基石）、**引用了种子**的文献
@@ -200,7 +229,7 @@ py -3 paperkit.py config --mailto 你的邮箱
 python3 -m unittest test_paperkit -v
 ```
 
-112 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
+169 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
 
 - **discover**：用按 OpenAlex 官方字段结构伪造的假 API 跑通整条流水线，
   覆盖打分排序、分级、RIS 格式、YAML 注入、重跑幂等、种子解析失败的降级，

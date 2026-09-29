@@ -1804,3 +1804,273 @@ class TestPruneOrphanNotes(unittest.TestCase):
             self.discover(root, vault, extra=["--prune"])
             self.discover(root, vault, extra=["--prune"])   # 第二次不该再动它
             self.assertEqual(len(list((vault / "10-文献笔记" / pk.RETIRED_DIR).glob("*.md"))), 1)
+
+
+# 用户第一份真实推荐列表的标题 (主题地图里被截短的样子): 分级|键|标题
+REAL_MAP_TITLES = """
+S|Bae2018|The Impact of Consumers’ Attitudes toward a Theme Park A
+S|Li2022|Study on Tourism Consumer Behavior and Countermeasures
+S|Luo2021|Exploring the Relationship Between Hedonism, Tourist
+S|Moisescu2021|Exploring the Drivers of Visitor Loyalty in the Context of
+S|Yuan2024|What keeps historical theme park visitors coming Research
+S|武扬2025|中小型主题公园的服务质量与品牌资产、游客满意度、目的地形象间的影响关系研究
+S|Yiguo2024|A Study on the Factors Influencing Theme Park Visitors'
+S|Milman2017|Exploring the experiential and sociodemographic drivers of
+S|Ali2016|Make it delightful Customers' experience, satisfaction and
+S|Dong2012|Servicescape elements, customer predispositions and service
+S|Alcañiz2004|The theme park experience An analysis of pleasure, arousal
+S|Chen2006|How destination image and evaluative factors affect
+S|Caber2016|Push or pull Identifying rock climbing tourists' motivations
+S|Goossens2000|Tourism information and pleasure motivation
+S|Kao2008|Effects of Theatrical Elements on Experiential Quality and
+S|Huang2009|Effects of Travel Motivation, Past Experience, Perceived
+S|Kim2010|Determining the Factors Affecting the Memorable Nature of
+S|Cheng2015|Visitors’ brand loyalty to a historical and cultural theme
+S|Ryan2010|Theme parks and a structural equation model of determinants
+A|Schmitt1999|Experiential Marketing
+A|Geissler2011|The overall theme park experience A visitor satisfaction
+A|Milman2012|Examining the guest experience in themed amusement parks
+A|Liang2024|The Role of Single Landscape Elements in Enhancing
+A|Jin2013|The Effect of Experience Quality on Perceived Value,
+A|Luo2018|The development of measurement scale for entertainment
+A|Akel2022|Prioritization of the Theme Park Satisfaction Criteria with
+A|Torres2017|Delighted or outraged Uncovering key drivers of exceedingly
+A|Wu2014|A Study of Experiential Quality, Experiential Value,
+A|Morris1995|Observations SAM The Self-Assessment Manikin An Efficient
+A|Zhu2022|Rethinking the Impact of Theme Park Image on Perceived
+A|Ryu2010|Relationships among hedonic and utilitarian values,
+A|Chen2009|Experience quality, perceived value, satisfaction and
+A|Lucarelli2011|City branding a state‐of‐the‐art review of the research
+A|Kaplan2010|Branding places applying brand personality concept to cities
+A|Zhang2017|A model of perceived image, memorable tourism experiences
+A|Boo2018|Tourists’ hotel event experience and satisfaction an
+A|Calver2013|Enlightened hedonism Exploring the relationship of service
+A|Chang2014|Creative tourism a preliminary examination of creative
+A|Wang2012|Tourist experience and Wetland parks A case of Zhejiang,
+B|Wang2019|Antecedents and Consequences of Brand Experiences in a
+B|Ma2016|Delighted or Satisfied Positive Emotional Responses Derived
+B|Asmelash2019|The structural relationship between tourist satisfaction
+B|Yim2013|Hedonic shopping motivation and co-shopper influence on
+B|Lee2010|The impact of tour quality and tourist satisfaction on
+B|Tian-Cole2003|A conceptualization of the relationships between service
+B|Grappi2010|The role of social identification and hedonism in affecting
+B|Um2006|Antecedents of revisit intention
+B|Back2003|A Brand Loyalty Model Involving Cognitive, Affective, and
+B|Başarangil2016|The relationships between the factors affecting perceived
+B|Suhartanto2019|Tourist loyalty in creative tourism the role of experience
+B|Alcañiz2008|The impact of experiential consumption cognitions and
+B|Stylidis2018|Characteristics of destination image visitors and
+B|Hanna2008|An analysis of terminology use in place branding
+B|Moilanen2015|Challenges of city branding A comparative study of 10
+B|Hultman2016|Demand- and supply-side perspectives of city branding A
+B|Kim2003|The influence of push and pull factors at Korean national
+B|Wang2015|Toward an integrated model of tourist expectation formation
+B|Zhang2021|Chinese cultural theme parks text mining and sentiment
+B|Liu2015|The role of travel experience in the structural
+B|Hsu2008|The preference analysis for tourist choice of destination A
+B|Fan2005|Branding the nation What is being branded
+B|Kirillova2015|Destination Aesthetics and Aesthetic Distance in Tourism
+B|Kim2010b|Development of a Scale to Measure Memorable Tourism
+B|Rajesh2013|Impact of Tourist Perceptions, Destination Image and
+B|Kruger2010|Travel Motivation of Tourists to Kruger and Tsitsikamma
+B|Guido2014|An Italian version of the 10-item Big Five Inventory An
+B|Manojlović2025|Effects of Cultural Tourism Experience on Tourist Behavior
+"""
+
+THEMES_FILE = Path(__file__).parent / "examples" / "themes-theme-park.txt"
+
+
+def real_rows():
+    return [line.split("|") for line in REAL_MAP_TITLES.strip().splitlines()]
+
+
+class TestThemeRules(unittest.TestCase):
+    def test_parses_names_keywords_and_skips_comments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "t.txt"
+            f.write_text("# 注释\n\n品牌: branding, brand\n动机：motivation、push and pull\n"
+                         "没有冒号的行\n", encoding="utf-8")
+            self.assertEqual(pk.load_themes(f), [("品牌", ["branding", "brand"]),
+                                                 ("动机", ["motivation", "push and pull"])])
+
+    def test_first_matching_theme_wins(self):
+        themes = [("主题公园", ["theme park"]), ("满意度", ["satisfaction"])]
+        self.assertEqual(pk.theme_of("Theme parks and visitor satisfaction", "", themes), "主题公园")
+
+    def test_title_beats_abstract(self):
+        themes = [("主题公园", ["theme park"]), ("满意度", ["satisfaction"])]
+        self.assertEqual(pk.theme_of("Customer satisfaction", "... at a theme park ...", themes), "满意度")
+
+    def test_abstract_is_used_when_title_misses(self):
+        themes = [("主题公园", ["theme park"])]
+        self.assertEqual(pk.theme_of("Observations", "we surveyed theme park guests", themes), "主题公园")
+        self.assertIsNone(pk.theme_of("Observations", "", themes))
+
+    def test_keywords_match_word_starts_not_inside_words(self):
+        themes = [("品牌", ["brand"]), ("公园", ["park"])]
+        self.assertEqual(pk.theme_of("City branding review", "", themes), "品牌")
+        self.assertIsNone(pk.theme_of("Sparkling wine", "", themes))
+
+    def test_chinese_keywords_match_literally(self):
+        themes = [("主题公园", ["主题公园"])]
+        self.assertEqual(pk.theme_of("中小型主题公园的服务质量研究", "", themes), "主题公园")
+
+
+class TestCuratedThemesOnRealTitles(unittest.TestCase):
+    """用我手工分过的真实列表校验示例分节规则."""
+
+    def setUp(self):
+        self.themes = pk.load_themes(THEMES_FILE)
+        self.got = {key: pk.theme_of(title, "", self.themes) for _, key, title in real_rows()}
+
+    def test_expected_sections(self):
+        expect = {
+            "Alcañiz2004": "主题公园与娱乐体验", "Ryan2010": "主题公园与娱乐体验",
+            "Geissler2011": "主题公园与娱乐体验", "Luo2018": "主题公园与娱乐体验",
+            "武扬2025": "主题公园与娱乐体验",
+            "Lucarelli2011": "城市与地方品牌", "Fan2005": "城市与地方品牌",
+            "Goossens2000": "旅游动机与目的地选择", "Kim2003": "旅游动机与目的地选择",
+            "Hsu2008": "旅游动机与目的地选择",
+            "Chen2006": "难忘体验与目的地形象", "Kim2010": "难忘体验与目的地形象",
+            "Ali2016": "愉悦、惊喜与享乐", "Torres2017": "愉悦、惊喜与享乐",
+            "Dong2012": "服务场景与体验质量", "Jin2013": "服务场景与体验质量",
+            "Chang2014": "文化与创意旅游", "Um2006": "满意、忠诚与重游意愿",
+            "Schmitt1999": "消费行为与体验营销", "Li2022": "消费行为与体验营销",
+        }
+        for key, theme in expect.items():
+            self.assertEqual(self.got[key], theme, key)
+
+    def test_korean_national_parks_is_not_branding(self):
+        # "nation" 作关键词会误中 "national"; 示例规则里不能有它
+        self.assertNotEqual(self.got["Kim2003"], "城市与地方品牌")
+
+    def test_few_titles_are_left_unsorted(self):
+        # 地图里的标题被截短了, 实际运行用完整标题, 命中只会更多
+        unsorted = [k for k, v in self.got.items() if v is None]
+        self.assertLessEqual(len(unsorted), 7, unsorted)
+
+
+class TestDraftThemes(unittest.TestCase):
+    def test_draft_from_real_titles_finds_the_obvious_topics(self):
+        titles = [t for _, _, t in real_rows()]
+        names = [n for n, _ in pk.draft_themes(titles)]
+        for want in ("theme park", "destination image", "city branding"):
+            self.assertIn(want, names)
+        self.assertLessEqual(len(names), 8)
+
+    def test_broad_single_words_go_below_specific_phrases(self):
+        titles = [t for _, _, t in real_rows()]
+        names = [n for n, _ in pk.draft_themes(titles)]
+        if "satisfaction" in names:
+            self.assertGreater(names.index("satisfaction"), names.index("theme park"))
+
+
+class TestOutline(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "v"
+        self.vault.mkdir()
+        self.themes = self.root / "themes.txt"
+        self.themes.write_text("种子: seed\n基石: foundational\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def discover(self, extra=()):
+        from unittest import mock
+        seeds = self.root / "s.txt"
+        seeds.write_text("10.1000/seed1\n10.1000/seed2\n", encoding="utf-8")
+        with mock.patch.object(pk, "Client", lambda **kw: FakeClient()):
+            return pk.main(["discover", "--seeds", str(seeds), "--out", str(self.root / "o"),
+                            "--vault", str(self.vault), "--no-pdf", "--themes", str(self.themes), *extra])
+
+    def outline_text(self):
+        return (self.vault / "30-论文地图" / f"{pk.OUTLINE_NOTE}.md").read_text(encoding="utf-8")
+
+    def test_discover_writes_outline_with_a_live_table_per_theme(self):
+        self.discover()
+        text = self.outline_text()
+        for name in ("种子", "基石", pk.UNSORTED_THEME):
+            self.assertIn(f"\n## {name}\n", text)
+            self.assertIn(f'WHERE theme = "{name}"', text)
+        self.assertIn("```dataview", text)
+        self.assertIn(str(self.themes), text)          # 告诉用户规则文件在哪
+
+    def test_notes_get_a_theme_field_and_body_is_untouched(self):
+        self.discover()
+        note = next(p for p in (self.vault / "10-文献笔记").rglob("*.md")
+                    if "Foundational Work" in p.read_text(encoding="utf-8"))
+        text = note.read_text(encoding="utf-8")
+        head = text.split("---")[1]
+        self.assertIn('theme: "基石"', head)
+        body_before = text.split("---", 2)[2]
+        note.write_text(text + "\n我的读书笔记\n", encoding="utf-8")
+        self.themes.write_text("基石改名: foundational\n", encoding="utf-8")
+        pk.main(["outline", "--vault", str(self.vault), "--themes", str(self.themes)])
+        text2 = note.read_text(encoding="utf-8")
+        self.assertIn('theme: "基石改名"', text2)
+        self.assertEqual(text2.count("theme:"), 1)
+        self.assertIn("我的读书笔记", text2)
+        self.assertIn(body_before.strip()[:200], text2)
+
+    def test_method_papers_go_to_the_methods_section(self):
+        CORPUS["W500"] = work("W500", "Partial Least Squares Structural Equation Modeling", 2017, 3000)
+        CORPUS["W1"]["referenced_works"].append("https://openalex.org/W500")
+        try:
+            self.discover()
+        finally:
+            CORPUS.pop("W500")
+            CORPUS["W1"]["referenced_works"].remove("https://openalex.org/W500")
+        note = next((self.vault / "10-文献笔记" / "M-研究方法").glob("*.md"))
+        self.assertIn(f'theme: "{pk.METHOD_THEME}"', note.read_text(encoding="utf-8"))
+        self.assertIn(f"\n## {pk.METHOD_THEME}\n", self.outline_text())
+
+    def test_retired_notes_are_excluded(self):
+        self.discover()
+        self.assertIn('tier != "不再推荐"', self.outline_text())
+
+    def test_draft_is_created_once_and_never_overwritten(self):
+        self.discover()
+        draft = self.vault / "30-论文地图" / f"{pk.DRAFT_NOTE}.md"
+        text = draft.read_text(encoding="utf-8")
+        self.assertIn("## 一、种子", text)
+        self.assertIn(f"[[{pk.OUTLINE_NOTE}#种子]]", text)
+        draft.write_text(text + "\n我写了一段综述\n", encoding="utf-8")
+        self.discover()
+        self.assertIn("我写了一段综述", draft.read_text(encoding="utf-8"))
+
+    def test_outline_command_works_offline(self):
+        self.discover()
+        from unittest import mock
+        with mock.patch.object(pk, "Client", mock.Mock(side_effect=AssertionError("不该联网"))), \
+             mock.patch.object(pk, "http_get", mock.Mock(side_effect=AssertionError("不该联网"))):
+            rc = pk.main(["outline", "--vault", str(self.vault), "--themes", str(self.themes)])
+        self.assertEqual(rc, 0)
+
+    def test_missing_theme_rules_are_drafted_and_saved(self):
+        self.themes.unlink()
+        self.discover()
+        self.assertTrue(self.themes.exists())
+        self.assertTrue(pk.load_themes(self.themes))
+        self.assertIn("\n## ", self.outline_text())
+
+    def test_outline_without_notes_fails_clearly(self):
+        empty = self.root / "empty"; empty.mkdir()
+        self.assertEqual(pk.main(["outline", "--vault", str(empty), "--themes", str(self.themes)]), 1)
+
+
+class TestUserEditedFilesInGbk(unittest.TestCase):
+    """用户会用记事本改 themes.txt 和 seeds.txt; 老版记事本存成 GBK, 不能一读就崩."""
+
+    def test_gbk_theme_rules_are_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "themes.txt"
+            f.write_bytes("主题公园: theme park, 主题公园\n".encode("gbk"))
+            self.assertEqual(pk.load_themes(f), [("主题公园", ["theme park", "主题公园"])])
+
+    def test_gbk_seed_file_is_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "seeds.txt"
+            f.write_bytes("# 我的种子\n10.1000/abc1  # 张三 2024\n".encode("gbk"))
+            self.assertEqual(pk.read_seeds(f), ["10.1000/abc1"])

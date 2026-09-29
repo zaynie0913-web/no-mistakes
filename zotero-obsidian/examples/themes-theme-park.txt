@@ -1,0 +1,18 @@
+# 文献综述的主题分节 —— 一行一节, 格式: 节名: 关键词, 关键词, ...
+#
+# 规则: 从上往下, 论文标题命中哪一节的关键词就归哪一节 (第一个命中的算数);
+#       标题一个都没命中, 再用摘要按同样顺序匹配; 还没命中的放进"未归类".
+# 所以: 具体的主题放上面, 宽泛的 (比如"满意度") 放下面, 不然会把别的节吞掉.
+#
+# 关键词不分大小写; 英文按词开头匹配 (brand 能匹配 branding, brands);
+# 中文按字面匹配. 改完运行 py -3 paperkit.py outline --vault "你的库路径" 即可重排.
+
+主题公园与娱乐体验: theme park, amusement park, themed, entertainment, 主题公园, 娱乐
+城市与地方品牌: branding, brand, place brand, 品牌
+旅游动机与目的地选择: motivation, push and pull, push or pull, destination choice, choice of destination, 动机
+难忘体验与目的地形象: memorable, destination image, image, aesthetic, expectation, 目的地形象, 难忘
+愉悦、惊喜与享乐: delight, hedonic, hedonism, pleasure, emotion, 愉悦, 享乐
+服务场景与体验质量: servicescape, experience quality, experiential quality, experiential value, service quality, tour quality, theatrical, landscape, 服务质量, 体验质量
+文化与创意旅游: cultural, creative tourism, heritage, wetland, 文化, 创意
+满意、忠诚与重游意愿: revisit, loyalty, satisfaction, satisfied, behavioral intention, behavioural intention, 重游, 忠诚, 满意
+消费行为与体验营销: consumer, consumption, shopping, experiential marketing, marketing, 消费

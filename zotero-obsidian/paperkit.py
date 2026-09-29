@@ -1915,13 +1915,246 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# outline: 按主题分节的文献综述大纲
+# --------------------------------------------------------------------------
+
+THEMES_PATH = Path(__file__).resolve().parent / "themes.txt"
+METHOD_THEME = "研究方法"
+UNSORTED_THEME = "未归类"
+OUTLINE_NOTE = "文献综述大纲"
+DRAFT_NOTE = "文献综述草稿"
+
+THEMES_HEADER = """# 文献综述的主题分节 —— 一行一节, 格式: 节名: 关键词, 关键词, ...
+#
+# 规则: 从上往下, 论文标题命中哪一节的关键词就归哪一节 (第一个命中的算数);
+#       标题一个都没命中, 再用摘要按同样顺序匹配; 还没命中的放进"未归类".
+# 所以: 具体的主题放上面, 宽泛的 (比如"满意度") 放下面, 不然会把别的节吞掉.
+#
+# 关键词不分大小写; 英文按词开头匹配 (brand 能匹配 branding, brands);
+# 中文按字面匹配. 改完运行 paperkit.py outline --vault "你的库路径" 即可重排.
+"""
+
+# 自动起草时不拿来当主题的泛用词 (几乎每篇旅游/管理论文标题里都有)
+AUTO_GENERIC = {
+    "experience", "tourist", "tourism", "visitor", "perceived", "value", "case",
+    "examination", "preliminary", "conceptualization", "version", "customer", "consumer",
+    "element", "scale", "measure",
+}
+
+
+def load_themes(path: Path) -> list[tuple[str, list[str]]]:
+    themes = []
+    for line in read_user_text(path).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^(.+?)\s*[:：]\s*(.+)$", line)
+        if not m:
+            continue
+        kws = [k.strip().lower() for k in re.split(r"[,，、]", m.group(2)) if k.strip()]
+        if kws:
+            themes.append((m.group(1).strip(), kws))
+    return themes
+
+
+def _theme_hit(kw: str, low: str) -> bool:
+    if re.search(r"[一-鿿]", kw):
+        return kw in low
+    # 按词开头匹配: brand 命中 branding, park 不命中 sparkling
+    return re.search(r"\b" + re.escape(kw), low) is not None
+
+
+def theme_of(title: str, abstract: str, themes: list[tuple[str, list[str]]]) -> str | None:
+    """先看标题, 标题一个都不中再看摘要; 各自按分节的先后顺序, 第一个命中的算数."""
+    for text in (title, abstract):
+        low = (text or "").lower()
+        if not low:
+            continue
+        for name, kws in themes:
+            if any(_theme_hit(k, low) for k in kws):
+                return name
+    return None
+
+
+def draft_themes(titles: Iterable[str], max_themes: int = 8) -> list[tuple[str, list[str]]]:
+    """没有分节规则时, 从标题里的高频词组起草一份, 用户再改名、调整."""
+    bigrams: Counter = Counter()
+    unigrams: Counter = Counter()
+    skip = GENERIC_WORDS | AUTO_GENERIC
+    for t in titles:
+        ws = [_stem(w) for w in re.findall(r"[a-z]{3,}", (t or "").lower())]
+        bigrams.update({f"{a} {b}" for a, b in zip(ws, ws[1:])
+                        if len(a) >= 4 and len(b) >= 4 and a not in GENERIC_WORDS
+                        and b not in GENERIC_WORDS})
+        unigrams.update({w for w in ws if len(w) >= 4 and w not in skip})
+    phrases = [b for b, n in bigrams.most_common() if n >= 3][:max_themes]
+    covered = {w for b in phrases for w in b.split()}
+    words = [w for w, n in unigrams.most_common() if n >= 4 and w not in covered]
+    # 词组比单词具体, 放上面; 单词里出现越多的越宽泛, 放越下面, 免得吞掉别的节
+    words = sorted(words[: max(0, max_themes - len(phrases))], key=lambda w: unigrams[w])
+    return [(x, [x]) for x in phrases + words]
+
+
+def _note_meta(path: Path) -> dict | None:
+    """读 paperkit 生成的文献笔记的标题、摘要、分级. 别的笔记 (没有 openalex 字段) 不管."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end < 0:
+        return None
+    head = text[3:end]
+    if not re.search(r"(?m)^openalex:", head):
+        return None
+
+    def field(key: str) -> str:
+        m = re.search(rf"(?m)^{key}:[ \t]*(.*)$", head)
+        return m.group(1).strip() if m else ""
+
+    m = re.search(r"\n## 摘要\s*\n(.*?)(?:\n## |\Z)", text, re.S)
+    return {"title": field("title").strip('"'), "tier": field("tier"),
+            "abstract": m.group(1).strip() if m else ""}
+
+
+def _set_frontmatter(path: Path, key: str, value: str) -> None:
+    """只改 frontmatter 里的一行; 没有就加一行. 正文一字不动."""
+    text = path.read_text(encoding="utf-8")
+    end = text.find("\n---", 3)
+    head, rest = text[:end], text[end:]
+    line = f'{key}: "{value}"'
+    if re.search(rf"(?m)^{key}:.*$", head):
+        head = re.sub(rf"(?m)^{key}:.*$", lambda _: line, head)
+    else:
+        head = head + "\n" + line
+    new = head + rest
+    if new != text:
+        path.write_text(new, encoding="utf-8")
+
+
+def _cn_number(n: int) -> str:
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    if n < 20:
+        return "十" + (digits[n - 10] if n > 10 else "")
+    return digits[n // 10] + "十" + (digits[n % 10] if n % 10 else "")
+
+
+def build_outline(vault: Path, themes_path: Path) -> int:
+    notes_root = vault / "10-文献笔记"
+    metas: list[tuple[Path, dict]] = []
+    for _, name in TIERS:
+        d = notes_root / name
+        if d.is_dir():
+            for f in sorted(d.glob("*.md")):
+                m = _note_meta(f)
+                if m:
+                    metas.append((f, m))
+    if not metas:
+        log(f"× {notes_root} 里没有 paperkit 生成的文献笔记, 先跑 discover")
+        return 1
+
+    if themes_path.exists():
+        themes = load_themes(themes_path)
+    else:
+        themes = draft_themes(m["title"] for _, m in metas if m["tier"] != "M")
+        themes_path.write_text(
+            THEMES_HEADER + "\n# 下面是按标题里的高频词自动起草的, 节名可以改成中文, 关键词可以增删.\n\n"
+            + "".join(f"{n}: {', '.join(k)}\n" for n, k in themes),
+            encoding="utf-8",
+        )
+        log(f"  · 还没有分节规则, 按标题高频词起草了一份: {themes_path}")
+    if not themes:
+        log(f"× {themes_path} 里没有有效的分节 (格式: 节名: 关键词, 关键词)")
+        return 1
+
+    counts: Counter = Counter()
+    for f, m in metas:
+        if m["tier"] == "M":
+            th = METHOD_THEME
+        else:
+            th = theme_of(m["title"], m["abstract"], themes) or UNSORTED_THEME
+        _set_frontmatter(f, "theme", th)
+        counts[th] += 1
+
+    sections = [n for n, _ in themes]
+    sections += [x for x in (METHOD_THEME, UNSORTED_THEME) if counts[x]]
+    rel_notes = notes_root.relative_to(vault).as_posix()
+    lines = [
+        f"# {OUTLINE_NOTE}", "",
+        "> [!note] 自动生成",
+        f"> 每次运行 discover 或 outline 都会重新生成这份大纲, 别在这里写东西; 写综述用 [[{DRAFT_NOTE}]].",
+        f"> 分节规则在 `{themes_path}`, 改完运行 `{PY} paperkit.py outline --vault \"{vault}\"` 重排.",
+        "",
+        f"共 {len(metas)} 篇 · {len(themes)} 个主题"
+        + (f" · 研究方法 {counts[METHOD_THEME]} 篇" if counts[METHOD_THEME] else "")
+        + (f" · 未归类 {counts[UNSORTED_THEME]} 篇" if counts[UNSORTED_THEME] else ""),
+    ]
+    for name in sections:
+        hint = ""
+        if name == UNSORTED_THEME:
+            hint = " — 给 themes.txt 补关键词, 就能把它们归进某一节"
+        elif not counts[name]:
+            hint = " — 还没有论文命中这一节的关键词"
+        lines += [
+            "", f"## {name}", "", f"*{counts[name]} 篇*{hint}", "",
+            "```dataview",
+            "TABLE WITHOUT ID file.link AS 文献, year AS 年份, tier AS 分级, status AS 状态",
+            f'FROM "{rel_notes}"',
+            f'WHERE theme = "{name}" AND tier != "{RETIRED_TIER}"',
+            "SORT score DESC",
+            "```",
+        ]
+    map_dir = vault / "30-论文地图"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    (map_dir / f"{OUTLINE_NOTE}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    draft = map_dir / f"{DRAFT_NOTE}.md"
+    if not draft.exists():
+        body = [f"# {DRAFT_NOTE}", "",
+                "> 按主题分节的写作底稿. 这个文件只在第一次生成, 之后不会被覆盖, 放心写.",
+                f"> 每节有哪些文献、读到哪了, 见 [[{OUTLINE_NOTE}]].", ""]
+        for i, name in enumerate([n for n, _ in themes], 1):
+            body += [f"## {_cn_number(i)}、{name}", "",
+                     f"相关文献: [[{OUTLINE_NOTE}#{name}]]", "",
+                     "<!-- 这一主题的主要观点是什么? 研究之间有哪些共识和分歧? 和你的研究有什么关系? -->",
+                     ""]
+        draft.write_text("\n".join(body), encoding="utf-8")
+        log(f"  ✓ 建好综述草稿: {draft}")
+
+    summary = ", ".join(f"{n} {counts[n]}" for n in sections if counts[n])
+    log(f"  ✓ 文献综述大纲: {summary}")
+    return 0
+
+
+def cmd_outline(args: argparse.Namespace) -> int:
+    vault = Path(args.vault).expanduser()
+    if not vault.is_dir():
+        log(f"× 库目录不存在: {vault}")
+        return 1
+    return build_outline(vault, Path(args.themes).expanduser() if args.themes else THEMES_PATH)
+
+
+# --------------------------------------------------------------------------
 # discover: 主流程
 # --------------------------------------------------------------------------
 
 
+def read_user_text(path: Path) -> str:
+    """读用户手改的文本文件. utf-8-sig 去掉老版记事本加的 BOM;
+    再老的记事本存成 GBK, 用 UTF-8 解不开时退回 GBK, 不能一读就崩."""
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("gbk", errors="replace")
+
+
 def read_seeds(path: Path) -> list[str]:
-    # utf-8-sig: 老版 Windows 记事本存的 UTF-8 带 BOM, 不剥掉第一行就解析失败.
-    raw = path.read_text(encoding="utf-8-sig").splitlines()
+    raw = read_user_text(path).splitlines()
     out = []
     for line in raw:
         line = line.strip()
@@ -2118,6 +2351,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
             render_map(seeds, final), encoding="utf-8"
         )
         log("  ✓ 主题地图.md")
+        build_outline(vault, Path(args.themes).expanduser() if args.themes else THEMES_PATH)
 
     (out / "paperkit-result.json").write_text(
         json.dumps(
@@ -2234,6 +2468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--have-seeds", action="store_true",
                    help="种子论文我已经有了: 不下载它们的 PDF, 也不写进 RIS, 免得 Zotero 里重复")
     d.add_argument("--force", action="store_true", help="覆盖已存在的笔记")
+    d.add_argument("--themes", help="分节规则文件 (默认 paperkit.py 旁边的 themes.txt)")
     d.add_argument("--prune", action="store_true",
                    help=f"不在这次结果里的旧笔记挪到 {RETIRED_DIR} (内容保留, 阅读面板不再列出)")
     d.set_defaults(func=cmd_discover)
@@ -2243,6 +2478,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     i.add_argument("--skip-plugins", action="store_true", help="不装 Obsidian 插件")
     i.add_argument("--skip-zotero", action="store_true", help="不管 Zotero 那边")
     i.set_defaults(func=cmd_install)
+
+    o = sub.add_parser("outline", help="按主题分节生成文献综述大纲 (不联网)")
+    o.add_argument("--vault", required=True, help="Obsidian 库根目录")
+    o.add_argument("--themes", help="分节规则文件 (默认 paperkit.py 旁边的 themes.txt)")
+    o.set_defaults(func=cmd_outline)
 
     sd = sub.add_parser("seeds", help="从已经下载的 PDF 生成种子清单")
     sd.add_argument("--from-pdfs", required=True, help="PDF 所在文件夹 (含子文件夹)")
