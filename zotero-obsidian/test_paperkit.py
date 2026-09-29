@@ -443,7 +443,7 @@ def zi_color_category(hexstr):
     return "Red"
 
 
-# Zotero 7 阅读器的默认标注色
+# Zotero 阅读器的默认标注色 (7 起沿用)
 ZOTERO_COLORS = {"#ffd400": "Yellow", "#ff6666": "Red", "#5fb236": "Green", "#2ea8e5": "Blue"}
 # 插件 filterBy 真正支持的命令 (src/bbt/template.env.ts FilterByCmd)
 ZI_FILTER_CMDS = {"startswith", "endswith", "contains",
@@ -967,3 +967,76 @@ class TestInstallTellsWhatItIsWaitingOn(unittest.TestCase):
                 pk.main(["install", "--vault", str(vault), "--skip-plugins"])
         self.assertIn("Better BibTeX", seen_before_download[0].rsplit("✓ 库结构就绪", 1)[-1])
         self.assertIn("Ctrl+C", seen_before_download[0])
+
+
+class TestWindowsKnownFolders(unittest.TestCase):
+    """真实用户的"下载"和文档在 D 盘, 只看 %USERPROFILE%/%APPDATA% 会找错地方.
+    Windows 上以系统的已知文件夹 API 为准, 环境变量只作为候选之一."""
+
+    def patched(self, known, env_appdata, home):
+        from unittest import mock
+        return [
+            mock.patch.object(pk.sys, "platform", "win32"),
+            mock.patch.object(pk, "_known_folder", lambda guid: known.get(guid)),
+            mock.patch.dict(pk.os.environ, {"APPDATA": str(env_appdata)}),
+            mock.patch.object(pk.Path, "home", lambda: home),
+        ]
+
+    def run_with(self, patches, fn):
+        import contextlib
+        with contextlib.ExitStack() as st:
+            for p in patches:
+                st.enter_context(p)
+            return fn()
+
+    def test_downloads_follow_the_relocated_known_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            moved = root / "D" / "Users" / "ASUS" / "Downloads"; moved.mkdir(parents=True)
+            home = root / "C" / "Users" / "ASUS"; home.mkdir(parents=True)   # 没有 Downloads
+            got = self.run_with(
+                self.patched({pk.FOLDERID_DOWNLOADS: moved}, root / "none", home),
+                pk.downloads_dir)
+            self.assertEqual(got, moved)
+
+    def test_obsidian_config_found_via_known_appdata_when_env_var_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "D" / "AppData" / "Roaming"
+            (real / "obsidian").mkdir(parents=True)
+            (real / "obsidian" / "obsidian.json").write_text("{}")
+            stale = root / "C" / "AppData" / "Roaming"; stale.mkdir(parents=True)
+            got = self.run_with(
+                self.patched({pk.FOLDERID_ROAMING_APPDATA: real}, stale, root / "home"),
+                pk.obsidian_config_dir)
+            self.assertEqual(got, real / "obsidian")
+
+    def test_zotero_profiles_are_collected_from_every_appdata_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "D" / "Roaming"
+            prof = real / "Zotero" / "Zotero" / "Profiles" / "abc.default"
+            prof.mkdir(parents=True)
+            stale = root / "C" / "Roaming"; stale.mkdir(parents=True)
+            got = self.run_with(
+                self.patched({pk.FOLDERID_ROAMING_APPDATA: real}, stale, root / "home"),
+                pk.zotero_profile_dirs)
+            self.assertEqual(got, [prof])
+
+    def test_known_folder_api_failure_falls_back_to_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = root / "Roaming"
+            (env / "obsidian").mkdir(parents=True)
+            (env / "obsidian" / "obsidian.json").write_text("{}")
+            got = self.run_with(self.patched({}, env, root / "home"), pk.obsidian_config_dir)
+            self.assertEqual(got, env / "obsidian")
+
+    def test_known_folder_is_none_off_windows(self):
+        from unittest import mock
+        with mock.patch.object(pk.sys, "platform", "linux"):
+            self.assertIsNone(pk._known_folder(pk.FOLDERID_DOWNLOADS))
+
+    def test_missing_zotero_hint_names_a_supported_version(self):
+        # 最新 Better BibTeX 要求 Zotero >= 8.0.1, 让人去装 Zotero 7 是错的.
+        self.assertNotIn("Zotero 7", pk.cmd_install.__code__.co_consts.__repr__())

@@ -34,6 +34,10 @@ mkdir -p ~/paperkit && cd ~/paperkit && curl -fsSLo paperkit.py https://raw.gith
 5. 没装 Better BibTeX 的话，把最新 `.xpi` 下载到「下载」文件夹
 6. 在当前目录建一个 `seeds.txt`
 
+**版本要求**：最新的 Better BibTeX（9.x）要求 **Zotero 8.0.1 以上**，Zotero 7 装不上。
+在 Zotero 的「帮助 → 关于 Zotero」里看版本，旧的就先升级。停更的 Zotero Integration
+插件用到的 8 个 Better BibTeX 接口，在 9.x 里全部还在。
+
 只剩两件事要手动点，装完会列出来：Obsidian 里开启社区插件（本来开着就跳过），
 以及在 Zotero 里装那个 `.xpi`（**工具 → 插件 → 右上角齿轮 → 从文件安装插件**）。
 Zotero 不提供命令行装插件的途径，这一步绕不开。
@@ -138,7 +142,7 @@ python3 paperkit.py discover \
 - **Obsidian 的 Zotero Integration 插件已停更**——最后一版 3.2.1 停在 2024-08，
   仓库先迁到 `community-archive/`，现在又挂在 `obsidian-community/` 下。目前仍能
   正常工作，但它是这条链路上唯一没人维护的一环，心里有数。`install` 每次都从
-  Obsidian 官方注册表查它的当前地址，仓库再搬家也不会下错。备选是走 Zotero 7 Local API 的 Zotero Bridge。
+  Obsidian 官方注册表查它的当前地址，仓库再搬家也不会下错。备选是走 Zotero Local API 的 Zotero Bridge。
 - RIS 里带了 `L1` 本地 PDF 路径，Zotero 导入时**可能**自动挂上附件，也可能不挂；
   不挂也没关系，PDF 本来就按分级躺在 `--out` 目录里。
 
@@ -153,7 +157,7 @@ python3 -m unittest test_paperkit -v
 - **discover**：用按 OpenAlex 官方字段结构伪造的假 API 跑通整条流水线，
   覆盖打分排序、分级、RIS 格式、YAML 注入、重跑幂等、种子解析失败的降级，
   以及「HTML 登录页不能被存成 PDF」
-- **笔记模板**：把插件源码里的颜色分类函数逐行移植进测试，钉死 Zotero 7 的
+- **笔记模板**：把插件源码里的颜色分类函数逐行移植进测试，钉死 Zotero 阅读器的
   四个默认标注色确实落在模板过滤的四个分类里，并且模板只用插件真正支持的
   过滤命令和变量
 - **install**：找库、插件下载与版本锁定、启用列表合并、插件配置合并、

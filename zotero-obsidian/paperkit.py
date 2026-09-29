@@ -611,7 +611,7 @@ VAULT_DIRS = ["00-面板", "10-文献笔记", "20-永久笔记", "30-论文地�
 # 变量和过滤器都对照过插件源码, 别凭印象改:
 # - filterBy 只认 startswith/endswith/contains 和日期比较, 没有 eq;
 #   写 eq 不报错, 只是每个小节永远为空.
-# - colorCategory 是插件按色相把十六进制色归的类, Zotero 7 默认的
+# - colorCategory 是插件按色相把十六进制色归的类, Zotero 阅读器默认的
 #   黄/红/绿/蓝 分别落在 Yellow/Red/Green/Blue.
 # - 条目的 Zotero 链接叫 desktopURI; 没有 pdfZoteroLink 这个变量.
 # - date 在条目没日期时是 null, 必须先判断再 format.
@@ -811,13 +811,68 @@ def http_get(url: str, timeout: int = 30) -> bytes | None:
         raise
 
 
-def _appdata() -> Path:
-    return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+# Windows 已知文件夹 (KNOWNFOLDERID). 用户在"属性 → 位置"里把文件夹挪到 D 盘后,
+# 以系统 API 返回的为准; %USERPROFILE% 下的同名目录可能根本不存在.
+FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
+FOLDERID_ROAMING_APPDATA = "{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}"
+
+
+def _known_folder(guid: str) -> Path | None:
+    """SHGetKnownFolderPath. 非 Windows 或调用失败返回 None, 调用方退回环境变量."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        u = uuid.UUID(guid)
+        g = GUID(u.time_low, u.time_mid, u.time_hi_version,
+                 (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        hr = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(g), 0, None, ctypes.byref(out)
+        )
+        try:
+            return Path(out.value) if hr == 0 and out.value else None
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+    except Exception:
+        return None
+
+
+def _appdata_dirs() -> list[Path]:
+    """Roaming AppData 的候选, 系统 API 的结果排第一, 去重."""
+    cands = [
+        _known_folder(FOLDERID_ROAMING_APPDATA),
+        os.environ.get("APPDATA"),
+        Path.home() / "AppData" / "Roaming",
+    ]
+    out: list[Path] = []
+    seen: set[str] = set()
+    for c in cands:
+        if not c:
+            continue
+        key = os.path.normcase(str(c))
+        if key not in seen:
+            seen.add(key)
+            out.append(Path(c))
+    return out
 
 
 def obsidian_config_dir() -> Path:
     if sys.platform == "win32":
-        return _appdata() / "obsidian"
+        dirs = _appdata_dirs()
+        for d in dirs:
+            if (d / "obsidian" / "obsidian.json").exists():
+                return d / "obsidian"
+        return dirs[0] / "obsidian"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "obsidian"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "obsidian"
@@ -825,8 +880,13 @@ def obsidian_config_dir() -> Path:
 
 def zotero_profile_dirs() -> list[Path]:
     if sys.platform == "win32":
-        base = _appdata() / "Zotero" / "Zotero" / "Profiles"
-    elif sys.platform == "darwin":
+        found: list[Path] = []
+        for d in _appdata_dirs():
+            base = d / "Zotero" / "Zotero" / "Profiles"
+            if base.is_dir():
+                found += [p for p in base.iterdir() if p.is_dir() and p not in found]
+        return found
+    if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support" / "Zotero" / "Profiles"
     else:
         base = Path.home() / ".zotero" / "zotero"
@@ -836,6 +896,9 @@ def zotero_profile_dirs() -> list[Path]:
 
 
 def downloads_dir() -> Path:
+    known = _known_folder(FOLDERID_DOWNLOADS)
+    if known and known.is_dir():
+        return known
     d = Path.home() / "Downloads"
     return d if d.is_dir() else Path.cwd()
 
@@ -1240,7 +1303,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             log("✓ Better BibTeX 已安装")
         else:
             if not profiles:
-                todo.append("先装 Zotero 7: https://www.zotero.org/download/")
+                todo.append(
+                    "没找到 Zotero 的配置目录. 没装的话先装最新版 Zotero "
+                    "(Better BibTeX 要求 8.0.1 以上): https://www.zotero.org/download/ ; "
+                    "已经装了就忽略这条"
+                )
             log("→ 正在从 GitHub 下载 Better BibTeX 安装包, 网速慢时要一两分钟 …")
             log("  (等太久可以 Ctrl+C, 改用浏览器下载, 装好后重跑本命令会自动跳过这步)")
             try:
