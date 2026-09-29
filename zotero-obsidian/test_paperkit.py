@@ -1744,3 +1744,63 @@ class TestDiscoverWithMethodTier(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertEqual((root / "o" / "M-研究方法" / f"{slug}.pdf").read_bytes(), b"%PDF-1.4 old download")
             self.assertFalse([c for c in calls if "pls.pdf" in c[0]])
+
+
+class TestPruneOrphanNotes(unittest.TestCase):
+    """旧笔记不在新结果里时还带着 tier: S, 阅读面板会继续把它列成"没读的核心论文"."""
+
+    def run(self, result=None):
+        return super().run(result)
+
+    def make_orphan(self, vault):
+        f = vault / "10-文献笔记" / "S-核心必读" / "Old2009 - Dropped Paper.md"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("---\ntier: S\nscore: 9.5\ntags: [论文, S/核心必读]\nstatus: 未读\n---\n\n"
+                     "> 分级: **S-核心必读**\n\n我写过的一句话\n", encoding="utf-8")
+        return f
+
+    def discover(self, root, vault, extra=()):
+        from unittest import mock
+        seeds = root / "s.txt"
+        seeds.write_text("10.1000/seed1\n", encoding="utf-8")
+        with mock.patch.object(pk, "Client", lambda **kw: FakeClient()):
+            pk.main(["discover", "--seeds", str(seeds), "--out", str(root / "o"),
+                     "--vault", str(vault), "--no-pdf", *extra])
+
+    def test_without_prune_orphans_stay_put(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); vault = root / "v"; vault.mkdir()
+            f = self.make_orphan(vault)
+            self.discover(root, vault)
+            self.assertTrue(f.exists())
+
+    def test_prune_moves_orphans_out_of_the_dashboard_but_keeps_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); vault = root / "v"; vault.mkdir()
+            f = self.make_orphan(vault)
+            self.discover(root, vault, extra=["--prune"])
+            self.assertFalse(f.exists())
+            moved = vault / "10-文献笔记" / pk.RETIRED_DIR / f.name
+            text = moved.read_text(encoding="utf-8")
+            self.assertIn("我写过的一句话", text)
+            self.assertIn(f"tier: {pk.RETIRED_TIER}", text)
+            self.assertNotIn("tier: S\n", text)
+            self.assertNotIn("分级: **S-核心必读**", text)
+
+    def test_prune_never_touches_current_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); vault = root / "v"; vault.mkdir()
+            self.discover(root, vault)
+            before = sorted(p.name for p in (vault / "10-文献笔记").rglob("*.md"))
+            self.discover(root, vault, extra=["--prune"])
+            after = sorted(p.name for p in (vault / "10-文献笔记").rglob("*.md"))
+            self.assertEqual(before, after)
+            self.assertFalse((vault / "10-文献笔记" / pk.RETIRED_DIR).exists())
+
+    def test_retired_notes_are_not_rescanned_as_tier_notes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); vault = root / "v"; vault.mkdir()
+            self.make_orphan(vault)
+            self.discover(root, vault, extra=["--prune"])
+            self.discover(root, vault, extra=["--prune"])   # 第二次不该再动它
+            self.assertEqual(len(list((vault / "10-文献笔记" / pk.RETIRED_DIR).glob("*.md"))), 1)

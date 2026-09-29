@@ -687,6 +687,24 @@ tags: [论文, {tier_tag}]
 """
 
 
+# 不在最新结果里的旧笔记挪到这里. 不在 TIERS 里, 下次重跑不会再扫它.
+RETIRED_DIR = "_不再推荐"
+RETIRED_TIER = "不再推荐"
+
+
+def retire_note(path: Path) -> None:
+    """改掉分级标记, 让阅读面板 (按 tier 过滤) 不再把它列成待读; 正文一字不动."""
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end > 0:
+            head, rest = text[:end], text[end:]
+            head = re.sub(r"(?m)^tier: .*$", f"tier: {RETIRED_TIER}", head)
+            text = head + rest
+    text = re.sub(r"分级: \*\*[^*]+\*\*", f"分级: **{RETIRED_TIER}**", text)
+    path.write_text(text, encoding="utf-8")
+
+
 def retier_note(path: Path, p: Paper) -> None:
     """只改分级相关的几行: frontmatter 的 tier/score/tags 和提示框里的"分级"."""
     text = path.read_text(encoding="utf-8")
@@ -2064,6 +2082,22 @@ def cmd_discover(args: argparse.Namespace) -> int:
             target.write_text(render_note(p, seed_titles), encoding="utf-8")
             n += 1
         orphans = [x for x in elsewhere if x not in wanted]
+        pruned = 0
+        if orphans and args.prune:
+            retired = notes_root / RETIRED_DIR
+            retired.mkdir(parents=True, exist_ok=True)
+            for name in orphans:
+                for f in elsewhere[name]:
+                    if not f.exists():
+                        continue
+                    dest = retired / f.name
+                    k = 2
+                    while dest.exists():
+                        dest = retired / f"{f.stem} ({k}){f.suffix}"
+                        k += 1
+                    f.replace(dest)
+                    retire_note(dest)
+                    pruned += 1
         parts = []
         if n:
             parts.append(f"新写入 {n} 篇")
@@ -2072,8 +2106,11 @@ def cmd_discover(args: argparse.Namespace) -> int:
         if kept:
             parts.append(f"{kept} 篇已存在没动")
         log(f"  ✓ Obsidian 文献笔记: {', '.join(parts) or '无'} → {notes_root}")
-        if orphans:
-            log(f"  · {len(orphans)} 篇旧笔记不在这次的结果里, 留着没删")
+        if pruned:
+            log(f"  · {pruned} 篇旧笔记不在这次的结果里, 已挪到 {RETIRED_DIR} (内容都在, 阅读面板不再列出)")
+        elif orphans:
+            log(f"  · {len(orphans)} 篇旧笔记不在这次的结果里, 留着没删; "
+                f"加 --prune 可把它们挪到 {RETIRED_DIR}")
 
         # 没跑过 setup 的库没有这个目录; 前面的活都干完了, 不能在最后一步崩掉.
         (vault / "30-论文地图").mkdir(parents=True, exist_ok=True)
@@ -2197,6 +2234,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--have-seeds", action="store_true",
                    help="种子论文我已经有了: 不下载它们的 PDF, 也不写进 RIS, 免得 Zotero 里重复")
     d.add_argument("--force", action="store_true", help="覆盖已存在的笔记")
+    d.add_argument("--prune", action="store_true",
+                   help=f"不在这次结果里的旧笔记挪到 {RETIRED_DIR} (内容保留, 阅读面板不再列出)")
     d.set_defaults(func=cmd_discover)
 
     i = sub.add_parser("install", help="一键安装: 自动找库, 铺结构, 装插件, 配 Zotero")
