@@ -753,7 +753,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 
 def read_seeds(path: Path) -> list[str]:
-    raw = path.read_text(encoding="utf-8").splitlines()
+    # utf-8-sig: 老版 Windows 记事本存的 UTF-8 带 BOM, 不剥掉第一行就解析失败.
+    raw = path.read_text(encoding="utf-8-sig").splitlines()
     return [ln for ln in (l.strip() for l in raw) if ln and not ln.startswith("#")]
 
 
@@ -970,6 +971,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     k.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args(argv)
+    # 中文 Windows 上输出被重定向时编码是 GBK, 装不下 ✓ 这类符号.
+    # 宁可显示成问号也不能让整个流程崩在一行日志上.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="replace")
     try:
         return args.func(args)
     except KeyboardInterrupt:

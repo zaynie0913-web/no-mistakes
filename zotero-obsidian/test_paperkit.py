@@ -381,3 +381,29 @@ class TestFrontmatterHardening(unittest.TestCase):
         p.tier = "S"
         head = pk.render_note(p, {}).split("---")[1]
         self.assertIn("""authors: ["Ann 'Q' Lee"]""", head)
+
+
+class TestWindowsRobustness(unittest.TestCase):
+    """Windows 上两个真实会炸的地方."""
+
+    def test_seeds_saved_by_old_notepad_with_bom_still_parse(self):
+        # 老版记事本另存为 UTF-8 会带 BOM, 第一行开头多一个 ﻿,
+        # W 号那一行 fullmatch 会失败, 标题搜索也会被污染.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "seeds.txt"
+            path.write_bytes("﻿W2741809807\n10.1000/seed1\n".encode("utf-8"))
+            self.assertEqual(pk.read_seeds(path), ["W2741809807", "10.1000/seed1"])
+
+    def test_gbk_console_cannot_crash_on_status_symbols(self):
+        # 中文 Windows 终端输出被重定向时编码是 GBK, "✓" 不在 GBK 里,
+        # 严格模式下 print 直接抛 UnicodeEncodeError.
+        import io
+        gbk = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict")
+        real = sys.stderr
+        sys.stderr = gbk
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                rc = pk.main(["setup", "--vault", tmp])
+        finally:
+            sys.stderr = real
+        self.assertEqual(rc, 0)

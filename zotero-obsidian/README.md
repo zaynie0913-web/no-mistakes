@@ -10,6 +10,21 @@
 手动读文献的三个卡点：找关联论文靠运气、下下来堆在一个文件夹里分不清主次、
 读的时候划了线但笔记散在 PDF 里回不到笔记库。这个工具把这三段接起来。
 
+## Windows 用户先看
+
+下文命令按 macOS/Linux 写。在 PowerShell 里有两处要换：
+
+- `python3` 换成 `py`（没有 `py` 就用 `python`）
+- 反斜杠 `\` 换行是 bash 语法，PowerShell 不认。把命令**写成一行**，
+  路径带空格的一律加英文双引号
+
+```powershell
+py paperkit.py setup --vault "C:\Users\你\Documents\Research"
+```
+
+没装 Python：`winget install -e --id Python.Python.3.12`，装完**重开**
+PowerShell 再试。
+
 ## 一次性配置
 
 ### 1. Zotero 侧
