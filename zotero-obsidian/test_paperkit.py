@@ -2074,3 +2074,231 @@ class TestUserEditedFilesInGbk(unittest.TestCase):
             f = Path(tmp) / "seeds.txt"
             f.write_bytes("# 我的种子\n10.1000/abc1  # 张三 2024\n".encode("gbk"))
             self.assertEqual(pk.read_seeds(f), ["10.1000/abc1"])
+
+
+# --------------------------------------------------------------------------
+# 理论/变量/方法识别 + 文献矩阵 + 统计 + 新文献追踪 + 引用格式
+# --------------------------------------------------------------------------
+
+class TestConceptExtraction(unittest.TestCase):
+    def test_real_titles(self):
+        c = pk.extract_concepts("The theme park experience: An analysis of pleasure, arousal and satisfaction", "")
+        self.assertIn("PAD 情绪模型", c["理论"])
+        self.assertIn("情绪/愉悦", c["变量"])
+        self.assertIn("满意度", c["变量"])
+        c = pk.extract_concepts("What keeps historical theme park visitors coming? Research based on "
+                                "expectation confirmation theory", "")
+        self.assertIn("期望确认理论", c["理论"])
+        c = pk.extract_concepts("Push or pull? Identifying rock climbing tourists' motivations", "")
+        self.assertIn("推拉理论", c["理论"])
+        self.assertIn("旅游动机", c["变量"])
+        c = pk.extract_concepts("中小型主题公园的服务质量与品牌资产、游客满意度、目的地形象间的影响关系研究", "")
+        for v in ("服务质量", "品牌资产", "满意度", "目的地/品牌形象"):
+            self.assertIn(v, c["变量"])
+
+    def test_abstract_contributes_methods_and_sample(self):
+        c = pk.extract_concepts("Visitor loyalty", "Data from 523 valid questionnaires were analysed "
+                                "with PLS-SEM using SmartPLS.")
+        self.assertIn("PLS-SEM", c["方法"])
+        self.assertIn("问卷调查", c["方法"])
+        self.assertNotIn("结构方程模型 (SEM)", c["方法"])   # PLS-SEM 已经说明了, 不重复
+        self.assertEqual(c["样本"], "523")
+
+    def test_whole_word_keywords_do_not_fire_inside_words(self):
+        c = pk.extract_concepts("Semantic analysis of women's reviews", "")
+        self.assertNotIn("结构方程模型 (SEM)", c["方法"])
+        self.assertNotIn("推荐/口碑", c["变量"])
+        c = pk.extract_concepts("A model tested with SEM (AMOS)", "")
+        self.assertIn("结构方程模型 (SEM)", c["方法"])
+
+    def test_sample_patterns(self):
+        for text, want in [("a sample of 412 theme park visitors", "412"), ("N = 300", "300"),
+                           ("共回收有效问卷356份", "356"), ("surveyed 1,208 tourists", "1208"),
+                           ("in 2019 tourists flocked", ""), ("5 respondents", "")]:
+            self.assertEqual(pk.extract_concepts("t", text)["样本"], want, text)
+
+
+class TestFrontmatterLists(unittest.TestCase):
+    def test_flow_comma_and_block_lists(self):
+        head = ("理论: [期望确认理论, S-O-R 模型]\n变量: 满意度，忠诚度、重游意愿\n"
+                "方法:\n  - PLS-SEM\n  - 问卷调查\n样本: \"523\"\n主要结论:\n")
+        self.assertEqual(pk._fm_list(head, "理论"), ["期望确认理论", "S-O-R 模型"])
+        self.assertEqual(pk._fm_list(head, "变量"), ["满意度", "忠诚度", "重游意愿"])
+        self.assertEqual(pk._fm_list(head, "方法"), ["PLS-SEM", "问卷调查"])
+        self.assertEqual(pk._fm_list(head, "主要结论"), [])
+        self.assertEqual(pk._fm_list(head, "不存在"), [])
+
+
+def write_note(root, tier_dir, name, title, abstract="", extra=""):
+    f = root / "10-文献笔记" / tier_dir / f"{name}.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tier = tier_dir[0]
+    f.write_text(f'---\ncitekey: x\ntitle: "{title}"\nyear: 2020\nvenue: "J"\ndoi: 10.1000/x1\n'
+                 f'openalex: W1\ntier: {tier}\nscore: 5\nstatus: 未读\n{extra}---\n\n# {title}\n\n'
+                 f'## 摘要\n\n{abstract}\n\n## 我的笔记\n', encoding="utf-8")
+    return f
+
+
+class TestMatrixAndStats(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vault = Path(self.tmp.name)
+        self.themes = self.vault / "themes.txt"
+        self.themes.write_text("主题公园: theme park\n", encoding="utf-8")
+        self.a = write_note(self.vault, "S-核心必读", "Yuan2024 - What keeps",
+                            "What keeps historical theme park visitors coming",
+                            "Based on expectation confirmation theory, 356 visitors ... satisfaction "
+                            "and revisit intention; PLS-SEM.")
+        self.b = write_note(self.vault, "A-强相关", "Ali2016 - Make it delightful",
+                            "Make it delightful: experience, satisfaction and loyalty in theme parks",
+                            "Delight, satisfaction and loyalty ... structural equation modelling of "
+                            "400 questionnaires.")
+        self.c = write_note(self.vault, "B-背景扩展", "Um2006 - Antecedents",
+                            "Antecedents of revisit intention", "perceived value and satisfaction drive revisit")
+        self.m = write_note(self.vault, "M-研究方法", "Hair2019 - PLS",
+                            "Assessing measurement model quality in PLS-SEM")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build(self):
+        return pk.main(["outline", "--vault", str(self.vault), "--themes", str(self.themes)])
+
+    def head(self, f):
+        return f.read_text(encoding="utf-8").split("---")[1]
+
+    def test_missing_matrix_fields_are_prefilled_once(self):
+        self.build()
+        h = self.head(self.a)
+        self.assertIn("理论: [期望确认理论]", h)
+        self.assertIn('样本: "356"', h)
+        self.assertRegex(h, r"(?m)^主要结论:")
+        self.assertIn("满意度", pk._fm_list(h, "变量"))
+
+    def test_user_corrections_are_never_overwritten(self):
+        self.build()
+        text = self.a.read_text(encoding="utf-8").replace("理论: [期望确认理论]", "理论: [计划行为理论]")
+        text = text.replace('样本: "356"', "样本:")          # 用户清空了一个识别错的字段
+        self.a.write_text(text, encoding="utf-8")
+        self.build()
+        h = self.head(self.a)
+        self.assertIn("理论: [计划行为理论]", h)
+        self.assertRegex(h, r'(?m)^样本:\s*$')            # 清空的不会被重新填回去
+        self.assertEqual(h.count("理论:"), 1)
+
+    def test_stats_follow_the_note_fields(self):
+        self.build()
+        text = self.a.read_text(encoding="utf-8").replace("理论: [期望确认理论]", "理论: [计划行为理论]")
+        self.a.write_text(text, encoding="utf-8")
+        self.build()
+        stats = (self.vault / "30-论文地图" / f"{pk.STATS_NOTE}.md").read_text(encoding="utf-8")
+        self.assertIn("计划行为理论", stats)
+        self.assertNotIn("| 期望确认理论 |", stats)
+        self.assertIn("满意度 × 重游意愿", stats)             # 两篇都同时研究了
+        self.assertIn("不代表整个领域", stats)                 # 研究空白提示要说清局限
+        self.assertIn(r"[[Yuan2024 - What keeps\|Yuan2024]]", stats)   # 表格里的竖线要转义
+
+    def test_method_papers_stay_out_of_matrix_and_stats(self):
+        self.build()
+        stats = (self.vault / "30-论文地图" / f"{pk.STATS_NOTE}.md").read_text(encoding="utf-8")
+        self.assertNotIn("Hair2019", stats)
+        rows = (self.vault / "30-论文地图" / f"{pk.MATRIX_NOTE}.csv").read_text(encoding="utf-8-sig")
+        self.assertNotIn("Hair2019", rows)
+
+    def test_matrix_note_and_excel_csv(self):
+        self.build()
+        note = (self.vault / "30-论文地图" / f"{pk.MATRIX_NOTE}.md").read_text(encoding="utf-8")
+        self.assertIn("```dataview", note)
+        for col in ("理论", "变量", "方法", "样本", "主要结论"):
+            self.assertIn(col, note)
+        raw = (self.vault / "30-论文地图" / f"{pk.MATRIX_NOTE}.csv").read_bytes()
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))      # Excel 要 BOM 才认中文
+        import csv, io
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+        self.assertEqual(len(rows), 3)
+        yuan = next(r for r in rows if r["文献"] == "Yuan2024")
+        self.assertEqual(yuan["理论"], "期望确认理论")
+        self.assertEqual(yuan["主题"], "主题公园")
+
+    def test_csv_open_in_excel_does_not_abort(self):
+        from unittest import mock
+        with mock.patch.object(pk, "_write_csv", mock.Mock(side_effect=PermissionError("Excel 正开着"))):
+            self.assertEqual(self.build(), 0)
+
+    def test_usage_guide_is_written_into_the_vault(self):
+        self.build()
+        guide = (self.vault / "00-面板" / f"{pk.GUIDE_NOTE}.md").read_text(encoding="utf-8")
+        self.assertIn("China National Standard GB/T 7714-2015 (numeric, 中文)", guide)
+        self.assertIn("zh-CN", guide)
+        for n in (pk.OUTLINE_NOTE, pk.MATRIX_NOTE, pk.STATS_NOTE, pk.NEWS_NOTE):
+            self.assertIn(f"[[{n}]]", guide)
+
+
+class TestNewNoteHasMatrixFields(unittest.TestCase):
+    def test_render_note_prefills_from_title_and_abstract(self):
+        p = pk.Paper.from_json(work("W9", "Push or pull? rock climbing tourists' motivations", 2016, 1))
+        p.abstract = "A survey of 312 climbers ..."
+        p.tier = "S"
+        head = pk.render_note(p, {}).split("---")[1]
+        self.assertIn("推拉理论", pk._fm_list(head, "理论"))
+        self.assertIn('样本: "312"', head)
+        self.assertRegex(head, r"(?m)^主要结论:")
+
+
+class TestRisLanguage(unittest.TestCase):
+    def test_language_codes_for_bilingual_citation_styles(self):
+        zh = pk.Paper.from_json(work("W1", "中小型主题公园的服务质量研究", 2025, 1)); zh.tier = "S"
+        en = pk.Paper.from_json(work("W2", "Theme park experience", 2004, 1)); en.tier = "S"
+        self.assertIn("LA  - zh-CN", pk.to_ris(zh))
+        self.assertIn("LA  - en-US", pk.to_ris(en))
+
+
+class TestNewLiteratureTracking(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.vault = self.root / "v"; self.vault.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def discover(self):
+        from unittest import mock
+        seeds = self.root / "s.txt"
+        seeds.write_text("10.1000/seed1\n10.1000/seed2\n", encoding="utf-8")
+        with mock.patch.object(pk, "Client", lambda **kw: FakeClient()):
+            pk.main(["discover", "--seeds", str(seeds), "--out", str(self.root / "o"),
+                     "--vault", str(self.vault), "--no-pdf", "--themes", str(self.root / "t.txt")])
+        return (self.vault / "30-论文地图" / f"{pk.NEWS_NOTE}.md").read_text(encoding="utf-8")
+
+    def test_first_run_only_sets_a_baseline(self):
+        news = self.discover()
+        self.assertIn("基准", news)
+        self.assertNotIn("Foundational Work Everyone Cites", news.split("## 最近")[0])
+
+    def test_previous_result_file_becomes_the_baseline(self):
+        out = self.root / "o"; out.mkdir()
+        (out / "paperkit-result.json").write_text(json.dumps([{"oid": "W100"}, {"oid": "W200"}]))
+        news = self.discover()
+        head = news.split("## 最近")[0]
+        self.assertNotIn("Foundational Work Everyone Cites", head)   # W100 以前见过
+        self.assertIn("Follow Up Citing One Seed", head)             # W201 是新的
+
+    def test_second_run_lists_only_papers_not_seen_before(self):
+        self.discover()
+        CORPUS["W202"] = work("W202", "Brand New Follow Up Paper", 2026, 3, refs=["W1", "W2", "W100"])
+        CITERS["W1"].append("W202"); CITERS["W2"].append("W202")
+        try:
+            news = self.discover()
+        finally:
+            CORPUS.pop("W202"); CITERS["W1"].remove("W202"); CITERS["W2"].remove("W202")
+        head = news.split("## 最近")[0]
+        self.assertIn("Brand New Follow Up Paper", head)
+        self.assertNotIn("Foundational Work Everyone Cites", head)
+        self.assertIn("新增 1 篇", news)
+
+    def test_recent_papers_citing_the_seeds_are_listed(self):
+        news = self.discover()
+        recent = news.split("## 最近")[1]
+        self.assertIn("Follow Up Citing Both Seeds", recent)   # 2024 年, 引用了两篇种子
+        self.assertNotIn("Foundational Work", recent)           # 2015 年的上游文献不算

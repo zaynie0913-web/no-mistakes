@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
 import math
@@ -198,6 +199,7 @@ class Paper:
     type: str | None = None
     # 所有开放获取副本的 PDF 地址, 最推荐的排第一. 出版社那份常被拦, 还有 PMC、机构仓库可试.
     pdf_urls: list[str] = field(default_factory=list)
+    date: str | None = None
 
     # 打分过程中填充
     score: float = 0.0
@@ -244,6 +246,7 @@ class Paper:
             is_oa=bool((loc or {}).get("is_oa")),
             type=w.get("type"),
             pdf_urls=urls,
+            date=w.get("publication_date"),
         )
 
     @property
@@ -628,6 +631,9 @@ def to_ris(p: Paper) -> str:
     else:
         lines.append(f"UR  - https://openalex.org/{p.oid}")
     # 分级和理由写进 Zotero 的标签/备注, 在 Zotero 里也能一眼看出为什么收它.
+    # 双语引用样式 (中文作者多于 3 个写"等", 英文写 et al.) 靠 Zotero 的语言字段区分,
+    # 必须是 zh-CN / en-US 这种代码, 写 "中文" "English" 不认.
+    lines.append("LA  - zh-CN" if re.search(r"[一-鿿]", p.title) else "LA  - en-US")
     lines.append(f"KW  - paperkit/{TIER_DIRS[p.tier]}")
     if p.reasons:
         lines.append(f"N1  - paperkit 关联理由: {'; '.join(p.reasons)} (score {p.score})")
@@ -635,6 +641,157 @@ def to_ris(p: Paper) -> str:
         lines.append(f"L1  - {p.pdf_path}")
     lines.append("ER  - ")
     return "\n".join(lines) + "\n\n"
+
+
+# --------------------------------------------------------------------------
+# 理论 / 变量 / 方法识别: 按标题和摘要里的关键词预填进笔记, 用户读的时候核对修改
+# --------------------------------------------------------------------------
+
+# 关键词写法: 英文按词开头匹配 (satisf 命中 satisfaction); 以 = 开头的按整词匹配
+# (=sem 不会命中 semantic, =wom 不会命中 women); 中文按字面匹配.
+THEORIES = [
+    ("期望确认理论", ["expectation confirmation", "expectation-confirmation",
+                "expectation disconfirmation", "expectancy disconfirmation", "期望确认", "期望不一致"]),
+    ("S-O-R 模型", ["stimulus-organism-response", "stimulus organism response", "s-o-r",
+                  "=sor model", "=sor framework", "=sor theory", "=sor paradigm", "刺激-机体-反应"]),
+    ("计划行为理论", ["planned behavio", "计划行为"]),
+    ("技术接受模型", ["technology acceptance", "技术接受"]),
+    ("推拉理论", ["push and pull", "push-pull", "push–pull", "push or pull", "推拉"]),
+    ("体验经济理论", ["experience economy", "体验经济"]),
+    ("心流理论", ["flow theory", "flow experience", "心流"]),
+    ("心理账户理论", ["mental accounting", "心理账户"]),
+    ("SERVQUAL 模型", ["servqual", "差距模型"]),
+    ("PAD 情绪模型", ["pleasure-arousal", "pleasure, arousal", "pleasure and arousal",
+                   "pleasure arousal", "=pad"]),
+    ("手段-目的链理论", ["means-end", "means end chain", "手段-目的", "手段目的"]),
+    ("社会认同理论", ["social identity", "social identification", "社会认同"]),
+    ("自我一致性理论", ["self-congruity", "self congruity", "自我一致"]),
+    ("地方依恋理论", ["place attachment", "地方依恋"]),
+    ("认知评价理论", ["cognitive appraisal", "appraisal theory", "认知评价"]),
+    ("社会交换理论", ["social exchange", "社会交换"]),
+    ("使用与满足理论", ["uses and gratification", "使用与满足"]),
+]
+
+VARIABLES = [
+    ("满意度", ["satisf", "满意"]),
+    ("忠诚度", ["loyal", "忠诚"]),
+    ("重游意愿", ["revisit", "return intention", "intention to return", "repeat visit", "重游", "再游"]),
+    ("推荐/口碑", ["word of mouth", "word-of-mouth", "=wom", "=ewom", "recommend", "口碑", "推荐"]),
+    ("行为意向", ["behavioral intention", "behavioural intention", "行为意向"]),
+    ("感知价值", ["perceived value", "感知价值"]),
+    ("享乐/功利价值", ["hedonic value", "utilitarian", "享乐价值", "功利价值"]),
+    ("服务质量", ["service quality", "服务质量"]),
+    ("体验质量", ["experience quality", "experiential quality", "quality of experience", "体验质量"]),
+    ("目的地/品牌形象", ["destination image", "park image", "brand image", "image", "目的地形象", "形象"]),
+    ("难忘旅游体验", ["memorable", "难忘"]),
+    ("情绪/愉悦", ["emotion", "pleasure", "arousal", "delight", "positive affect", "情绪", "愉悦", "惊喜"]),
+    ("享乐主义", ["hedonism", "hedonic motivation", "享乐主义"]),
+    ("旅游动机", ["motivation", "=motives", "动机"]),
+    ("期望", ["expectation", "期望"]),
+    ("信任", ["=trust", "信任"]),
+    ("品牌资产", ["brand equity", "品牌资产"]),
+    ("地方依恋", ["place attachment", "地方依恋"]),
+    ("涉入度", ["involvement", "涉入"]),
+    ("感知风险", ["perceived risk", "感知风险"]),
+    ("服务场景", ["servicescape", "physical environment", "服务场景"]),
+    ("拥挤感", ["crowding", "拥挤"]),
+    ("真实性", ["authenticity", "真实性"]),
+    ("新奇感", ["novelty", "新奇"]),
+    ("怀旧", ["nostalgi", "怀旧"]),
+    ("价格/公平", ["price fairness", "perceived price", "价格"]),
+]
+
+METHODS = [
+    ("PLS-SEM", ["pls-sem", "partial least squares", "smartpls", "=pls"]),
+    ("结构方程模型 (SEM)", ["structural equation", "=sem", "=amos", "=lisrel", "结构方程"]),
+    ("问卷调查", ["questionnaire", "survey", "问卷"]),
+    ("访谈/质性研究", ["interview", "qualitative", "grounded theory", "访谈", "质性", "扎根"]),
+    ("文本挖掘/情感分析", ["text mining", "sentiment", "online review", "user-generated",
+                    "文本挖掘", "情感分析", "网络评论"]),
+    ("实验法", ["experiment", "实验"]),
+    ("回归分析", ["regression", "回归"]),
+    ("fsQCA", ["fsqca", "qualitative comparative analysis", "定性比较"]),
+    ("层次分析法 (AHP)", ["analytic hierarchy", "=ahp", "层次分析"]),
+    ("因子分析", ["factor analysis", "因子分析"]),
+    ("大数据/机器学习", ["big data", "machine learning", "deep learning", "neural network",
+                   "大数据", "机器学习"]),
+]
+
+MATRIX_FIELDS = ["理论", "变量", "方法", "样本", "主要结论"]
+
+SAMPLE_PATTERNS = [
+    r"\bn\s*=\s*([\d,]{2,7})",
+    r"([\d,]{2,7})\s+(?:valid\s+|usable\s+|completed\s+|effective\s+)?"
+    r"(?:respondents|questionnaires|responses|participants|visitors|tourists|guests|"
+    r"customers|consumers|samples|climbers|students)",
+    r"sample\s+(?:size\s+)?of\s+([\d,]{2,7})",
+    r"([\d,]{2,7})\s*份",
+]
+
+
+def _kw_hit(kw: str, low: str) -> bool:
+    if re.search(r"[一-鿿]", kw):
+        return kw in low
+    if kw.startswith("="):
+        return re.search(r"\b" + re.escape(kw[1:]) + r"\b", low) is not None
+    return re.search(r"\b" + re.escape(kw), low) is not None
+
+
+def _hits(table: list[tuple[str, list[str]]], low: str) -> list[str]:
+    return [name for name, kws in table if any(_kw_hit(k, low) for k in kws)]
+
+
+def extract_sample(text: str) -> str:
+    low = (text or "").lower()
+    for pat in SAMPLE_PATTERNS:
+        for m in re.finditer(pat, low):
+            n = int(m.group(1).replace(",", "") or 0)
+            # 年份和个位数不是样本量
+            if 30 <= n <= 100000 and not 1950 <= n <= 2035:
+                return str(n)
+    return ""
+
+
+def extract_concepts(title: str, abstract: str) -> dict:
+    """按关键词猜这篇用了什么理论、研究了哪些变量、用的什么方法、样本多大.
+    只是预填, 笔记里写明让用户读的时候核对."""
+    low = f"{title or ''}\n{abstract or ''}".lower()
+    methods = _hits(METHODS, low)
+    if "PLS-SEM" in methods and "结构方程模型 (SEM)" in methods:
+        methods.remove("结构方程模型 (SEM)")   # PLS-SEM 已经说明了
+    return {
+        "理论": _hits(THEORIES, low),
+        "变量": _hits(VARIABLES, low),
+        "方法": methods,
+        "样本": extract_sample(abstract) or extract_sample(title),
+    }
+
+
+def matrix_lines(c: dict) -> list[str]:
+    lines = [f"{k}: [{', '.join(c[k])}]" for k in ("理论", "变量", "方法")]
+    lines.append(f'样本: "{c["样本"]}"' if c["样本"] else "样本:")
+    lines.append("主要结论:")
+    return lines
+
+
+def _fm_list(head: str, key: str) -> list[str]:
+    """读 frontmatter 里的列表字段. 兼容 [a, b]、"a，b、c" 和 YAML 块列表三种写法."""
+    m = re.search(rf"(?m)^{re.escape(key)}:[ \t]*(.*)$", head)
+    if not m:
+        return []
+    v = m.group(1).strip()
+    if v.startswith("[") and v.endswith("]"):
+        items = v[1:-1].split(",")
+    elif v:
+        items = re.split(r"[,，、;；]", v)
+    else:
+        items = []
+        for line in head[m.end():].splitlines()[1:]:
+            b = re.match(r"^\s+-\s*(.*)$", line)
+            if not b:
+                break
+            items.append(b.group(1))
+    return [x.strip().strip('"').strip("'").strip() for x in items if x.strip().strip('"\'')]
 
 
 NOTE_TEMPLATE = """---
@@ -650,6 +807,7 @@ score: {score}
 status: 未读
 rating:
 tags: [论文, {tier_tag}]
+{matrix}
 ---
 
 # {title}
@@ -659,6 +817,10 @@ tags: [论文, {tier_tag}]
 >
 > 关联种子: {seed_links}
 > 被引: {cited_by} · 年份: {year} · 分级: **{tier_name}**
+
+> [!tip] 文献矩阵
+> 顶部属性里的 理论 / 变量 / 方法 / 样本 是按摘要自动识别的, 读的时候核对修改;
+> 主要结论读完自己填. 这几项会汇总进 [[文献矩阵]] 和 [[理论与变量]].
 
 ## 摘要
 
@@ -739,6 +901,7 @@ def render_note(p: Paper, seed_titles: dict[str, str]) -> str:
         seed_links=links,
         cited_by=p.cited_by,
         abstract=p.abstract or "*(OpenAlex 无摘要, 打开 PDF 补)*",
+        matrix="\n".join(matrix_lines(extract_concepts(p.title, p.abstract))),
     )
 
 
@@ -1958,10 +2121,8 @@ def load_themes(path: Path) -> list[tuple[str, list[str]]]:
 
 
 def _theme_hit(kw: str, low: str) -> bool:
-    if re.search(r"[一-鿿]", kw):
-        return kw in low
-    # 按词开头匹配: brand 命中 branding, park 不命中 sparkling
-    return re.search(r"\b" + re.escape(kw), low) is not None
+    # 按词开头匹配: brand 命中 branding, park 不命中 sparkling; =开头按整词
+    return _kw_hit(kw, low)
 
 
 def theme_of(title: str, abstract: str, themes: list[tuple[str, list[str]]]) -> str | None:
@@ -2015,8 +2176,27 @@ def _note_meta(path: Path) -> dict | None:
         return m.group(1).strip() if m else ""
 
     m = re.search(r"\n## 摘要\s*\n(.*?)(?:\n## |\Z)", text, re.S)
-    return {"title": field("title").strip('"'), "tier": field("tier"),
-            "abstract": m.group(1).strip() if m else ""}
+    abstract = m.group(1).strip() if m else ""
+    if abstract.startswith("*(OpenAlex 无摘要"):
+        abstract = ""
+    return {"title": field("title").strip('"'), "tier": field("tier"), "abstract": abstract,
+            "year": field("year"), "venue": field("venue").strip('"'),
+            "doi": field("doi"), "status": field("status"), "theme": field("theme").strip('"'),
+            "head": head}
+
+
+def _add_missing_frontmatter(path: Path, lines: list[str]) -> bool:
+    """只补缺的键, 已有的键 (哪怕值是空的) 一律不动: 用户清空识别错的字段后,
+    下次运行不能再填回去."""
+    text = path.read_text(encoding="utf-8")
+    end = text.find("\n---", 3)
+    head, rest = text[:end], text[end:]
+    add = [ln for ln in lines
+           if not re.search(rf"(?m)^{re.escape(ln.split(':', 1)[0])}:", head)]
+    if not add:
+        return False
+    path.write_text(head + "\n" + "\n".join(add) + rest, encoding="utf-8")
+    return True
 
 
 def _set_frontmatter(path: Path, key: str, value: str) -> None:
@@ -2078,6 +2258,8 @@ def build_outline(vault: Path, themes_path: Path) -> int:
         else:
             th = theme_of(m["title"], m["abstract"], themes) or UNSORTED_THEME
         _set_frontmatter(f, "theme", th)
+        if m["tier"] != "M":
+            _add_missing_frontmatter(f, matrix_lines(extract_concepts(m["title"], m["abstract"])))
         counts[th] += 1
 
     sections = [n for n, _ in themes]
@@ -2127,7 +2309,309 @@ def build_outline(vault: Path, themes_path: Path) -> int:
 
     summary = ", ".join(f"{n} {counts[n]}" for n in sections if counts[n])
     log(f"  ✓ 文献综述大纲: {summary}")
+
+    # 字段刚补过, 重新读一遍; 统计以笔记里的字段为准, 用户改正了哪篇, 统计就跟着准
+    studies = [(f, m) for f, m in ((f, _note_meta(f)) for f, _ in metas)
+               if m and m["tier"] != "M"]
+    write_matrix(vault, map_dir, studies)
+    write_stats(map_dir, studies)
+    write_guide(vault, themes_path)
     return 0
+
+
+# --------------------------------------------------------------------------
+# 文献矩阵 / 理论与变量统计 / 使用说明
+# --------------------------------------------------------------------------
+
+MATRIX_NOTE = "文献矩阵"
+STATS_NOTE = "理论与变量"
+NEWS_NOTE = "新文献"
+GUIDE_NOTE = "使用说明"
+MATRIX_COLUMNS = ["文献", "标题", "年份", "期刊", "DOI", "分级", "主题",
+                  "理论", "变量", "方法", "样本", "主要结论", "状态"]
+
+
+def _alias(path: Path) -> str:
+    return path.stem.split(" - ")[0]
+
+
+def _cell_link(path: Path) -> str:
+    """表格里的链接: 竖线要转义, 不然会被当成表格分隔符."""
+    return f"[[{path.stem}\\|{_alias(path)}]]"
+
+
+def _fm_text(head: str, key: str) -> str:
+    m = re.search(rf"(?m)^{re.escape(key)}:[ \t]*(.*)$", head)
+    return m.group(1).strip().strip('"') if m else ""
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    # utf-8-sig: Excel 要 BOM 才会按 UTF-8 打开, 不然中文全是乱码
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=MATRIX_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def write_matrix(vault: Path, map_dir: Path, studies: list[tuple[Path, dict]]) -> None:
+    rel_notes = (vault / "10-文献笔记").relative_to(vault).as_posix()
+    csv_path = map_dir / f"{MATRIX_NOTE}.csv"
+    note = [
+        f"# {MATRIX_NOTE}", "",
+        "> [!note] 自动生成",
+        "> 理论 / 变量 / 方法 / 样本 先按摘要自动识别, 读的时候在每篇笔记顶部的属性里核对修改;",
+        "> 主要结论读完自己填. 表格实时更新.",
+        f"> 同一张表的 Excel 版: `{csv_path}` (每次运行 discover 或 outline 时更新)",
+        "",
+        "```dataview",
+        "TABLE WITHOUT ID file.link AS 文献, year AS 年份, theme AS 主题, 理论, 变量, 方法, 样本, "
+        "主要结论, status AS 状态",
+        f'FROM "{rel_notes}"',
+        f'WHERE tier != "{RETIRED_TIER}" AND tier != "M"',
+        "SORT theme ASC, score DESC",
+        "```",
+    ]
+    (map_dir / f"{MATRIX_NOTE}.md").write_text("\n".join(note) + "\n", encoding="utf-8")
+
+    rows = []
+    for f, m in studies:
+        h = m["head"]
+        rows.append({
+            "文献": _alias(f), "标题": m["title"], "年份": m["year"], "期刊": m["venue"],
+            "DOI": m["doi"], "分级": m["tier"], "主题": m["theme"],
+            "理论": "、".join(_fm_list(h, "理论")), "变量": "、".join(_fm_list(h, "变量")),
+            "方法": "、".join(_fm_list(h, "方法")), "样本": _fm_text(h, "样本"),
+            "主要结论": _fm_text(h, "主要结论"), "状态": m["status"],
+        })
+    try:
+        _write_csv(csv_path, rows)
+        log(f"  ✓ 文献矩阵: {len(rows)} 篇 (Excel 版 {csv_path.name})")
+    except PermissionError:
+        log(f"  · {csv_path.name} 可能正在 Excel 里打开, 这次没更新; 关掉 Excel 再运行 outline")
+
+
+def _var_order(name: str) -> tuple:
+    names = [n for n, _ in VARIABLES]
+    return (names.index(name) if name in names else len(names), name)
+
+
+def write_stats(map_dir: Path, studies: list[tuple[Path, dict]]) -> None:
+    def table(field: str, title: str) -> list[str]:
+        counter: Counter = Counter()
+        papers: dict[str, list[Path]] = {}
+        for f, m in studies:
+            for x in dict.fromkeys(_fm_list(m["head"], field)):
+                counter[x] += 1
+                papers.setdefault(x, []).append(f)
+        out = ["", f"## {title}", ""]
+        if not counter:
+            return out + ["还没有识别到. 读的时候在笔记属性里填上, 再运行 outline."]
+        out += [f"| {field} | 篇数 | 文献 |", "|---|---|---|"]
+        for name, n in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+            links = ", ".join(_cell_link(p) for p in papers[name][:8])
+            more = f" 等 {n} 篇" if n > 8 else ""
+            out.append(f"| {name} | {n} | {links}{more} |")
+        return out
+
+    with_abstract = sum(1 for _, m in studies if m["abstract"])
+    lines = [
+        f"# {STATS_NOTE}", "",
+        "> [!note] 自动生成 · 每次运行 discover 或 outline 更新",
+        "> 统计来自每篇文献笔记里的 理论 / 变量 / 方法 字段. 这些字段先按摘要自动识别,",
+        "> 你读的时候在笔记里改正, 再运行 outline, 这里就跟着准.",
+        f"> 范围: {len(studies)} 篇文献 (不含研究方法类), 其中 {with_abstract} 篇有摘要可供识别.",
+    ]
+    lines += table("理论", "用得最多的理论")
+    lines += table("变量", "研究得最多的变量")
+    lines += table("方法", "研究方法分布")
+
+    var_count: Counter = Counter()
+    pairs: Counter = Counter()
+    pair_papers: dict[tuple, list[Path]] = {}
+    for f, m in studies:
+        vs = sorted(dict.fromkeys(_fm_list(m["head"], "变量")), key=_var_order)
+        var_count.update(vs)
+        for i in range(len(vs)):
+            for j in range(i + 1, len(vs)):
+                key = (vs[i], vs[j])
+                pairs[key] += 1
+                pair_papers.setdefault(key, []).append(f)
+
+    lines += ["", "## 常一起研究的变量组合", ""]
+    common = [(k, n) for k, n in pairs.most_common() if n >= 2][:15]
+    if common:
+        lines += ["| 组合 | 篇数 | 文献 |", "|---|---|---|"]
+        for (a, b), n in common:
+            links = ", ".join(_cell_link(p) for p in pair_papers[(a, b)][:6])
+            lines.append(f"| {a} × {b} | {n} | {links} |")
+    else:
+        lines.append("还没有两篇以上共同研究的变量组合.")
+
+    lines += ["", "## 很少一起研究的变量组合", "",
+              "> 只在这批文献范围内统计, 不代表整个领域没人做过. 拿来当找研究空白的线索,",
+              "> 真要用, 得去知网 / Web of Science 用这两个变量一起检索核实.", ""]
+    top = [v for v, n in var_count.most_common(8) if n >= 2]
+    rare = []
+    for i in range(len(top)):
+        for j in range(i + 1, len(top)):
+            a, b = sorted((top[i], top[j]), key=_var_order)
+            if pairs[(a, b)] <= 1:
+                rare.append((pairs[(a, b)], -(var_count[a] + var_count[b]), a, b))
+    if rare:
+        lines += ["| 组合 | 一起出现的篇数 | 各自出现的篇数 |", "|---|---|---|"]
+        for n, _, a, b in sorted(rare)[:12]:
+            lines.append(f"| {a} × {b} | {n} | {var_count[a]} / {var_count[b]} |")
+    else:
+        lines.append("文献还太少, 或者常见变量之间都有研究, 暂时看不出.")
+    (map_dir / f"{STATS_NOTE}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log(f"  ✓ 理论与变量: {sum(1 for _, m in studies if _fm_list(m['head'], '理论'))} 篇识别到理论, "
+        f"{len(var_count)} 个变量")
+
+
+SEEN_FILE = "paperkit-seen.json"
+
+
+def track_literature(out: Path, final: list[Paper], candidates: dict[str, Paper],
+                     this_year: int) -> dict:
+    """记住见过哪些论文, 只把新出现的列出来. 第一次只建基准, 不把全部 80 篇都当"新"的刷屏."""
+    today = time.strftime("%Y-%m-%d")
+    seen_path = out / SEEN_FILE
+    state: dict = {"seen": {}, "runs": []}
+    if seen_path.exists():
+        try:
+            state = json.loads(seen_path.read_text(encoding="utf-8"))
+        except ValueError:
+            pass
+    else:
+        prev = out / "paperkit-result.json"
+        if prev.exists():
+            try:
+                state["seen"] = {r["oid"]: "更早" for r in json.loads(prev.read_text(encoding="utf-8"))
+                                 if isinstance(r, dict) and r.get("oid")}
+            except ValueError:
+                pass
+    seen: dict = state.setdefault("seen", {})
+    runs: list = state.setdefault("runs", [])
+
+    current = [p for p in final if not p.is_seed]
+    baseline = not seen
+    if baseline:
+        new: list[Paper] = []
+        runs.append({"date": today, "baseline": len(current)})
+    else:
+        new = [p for p in current if p.oid not in seen]
+        runs.append({"date": today, "new": len(new)})
+    for p in current:
+        seen.setdefault(p.oid, today)
+    seen_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    since = this_year - 2
+    recent = sorted(
+        (c for c in candidates.values() if c.prov.get("fwd") and (c.year or 0) >= since),
+        key=lambda c: c.date or str(c.year or ""), reverse=True,
+    )[:15]
+    if baseline:
+        log(f"  ✓ 新文献追踪: 第一次运行, 已把当前 {len(current)} 篇记为基准")
+    else:
+        log(f"  ✓ 新文献追踪: 本次新增 {len(new)} 篇")
+    return {"new": new, "recent": recent, "baseline": baseline, "count": len(current),
+            "runs": runs, "final_ids": {p.oid for p in final}, "today": today}
+
+
+def write_news(map_dir: Path, news: dict, this_year: int) -> None:
+    lines = [
+        f"# {NEWS_NOTE}", "",
+        "> [!note] 每次运行 discover 更新. 写论文期间建议每月跑一次, 不漏最新研究.",
+        "",
+        f"## 本次新进入推荐的 ({news['today']})", "",
+    ]
+    if news["baseline"]:
+        lines.append(f"第一次追踪: 已把当前 {news['count']} 篇记为基准, 下次运行起这里会列出新出现的论文.")
+    elif news["new"]:
+        for p in news["new"]:
+            lines.append(f"- [[{p.slug()}|{p.slug().split(' - ')[0]}]] · {TIER_DIRS[p.tier]} · "
+                         f"{p.year or ''} · {p.title}")
+    else:
+        lines.append("这次没有新论文进入推荐.")
+
+    lines += ["", f"## 最近引用了你种子论文的 ({this_year - 2} 年以来)", ""]
+    if news["recent"]:
+        for c in news["recent"]:
+            link = f"[{c.title}](https://doi.org/{c.doi})" if c.doi else c.title
+            where = "已在推荐里" if c.oid in news["final_ids"] else "没进推荐"
+            lines.append(f"- {c.date or c.year} · {link} · 引用了 {c.prov['fwd']} 篇种子 · {where}")
+    else:
+        lines.append("暂时没有.")
+
+    lines += ["", "## 追踪记录", ""]
+    for r in reversed(news["runs"][-24:]):
+        if "baseline" in r:
+            lines.append(f"- {r['date']}: 建立基准 ({r['baseline']} 篇)")
+        else:
+            lines.append(f"- {r['date']}: 新增 {r['new']} 篇")
+    map_dir.mkdir(parents=True, exist_ok=True)
+    (map_dir / f"{NEWS_NOTE}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_guide(vault: Path, themes_path: Path) -> None:
+    """放进仓库的使用说明, 每次重新生成. 写在 Obsidian 里, 用的时候随手能找到."""
+    v = f'"{vault}"'
+    text = f"""# {GUIDE_NOTE}
+
+> [!note] 自动生成 · 每次运行都会更新这份说明, 别在这里写东西
+
+## 这些笔记是干什么的
+
+| 笔记 | 用途 |
+|---|---|
+| [[阅读面板]] | 还没读的核心论文、在读的、读完没总结的 |
+| [[主题地图]] | 按 S / A / B / M 分级列出全部推荐 |
+| [[{OUTLINE_NOTE}]] | 按主题分节, 每节一张表, 看每节读到哪了 |
+| [[{DRAFT_NOTE}]] | 按同样的分节写综述, 只生成一次, 放心写 |
+| [[{MATRIX_NOTE}]] | 每篇的理论、变量、方法、样本、结论, 一张大表; 另有 Excel 版 |
+| [[{STATS_NOTE}]] | 哪些理论、变量用得最多, 哪些常一起研究, 哪些很少一起研究 |
+| [[{NEWS_NOTE}]] | 每次运行新出现的论文, 以及最近引用了你种子论文的研究 |
+
+分级: S 核心必读 · A 强相关 · B 背景扩展 · M 研究方法 (写方法论那章时引).
+
+## 读一篇论文
+
+1. 在 Zotero 里打开 PDF, 按颜色划线: 黄 = 关键结论, 红 = 存疑, 绿 = 可借鉴的方法, 蓝 = 待深挖
+2. 读完回 Obsidian, `Ctrl+P` → `Zotero Integration: {ZI_FORMAT_NAME}`, 选中这篇, 划线按颜色归位
+3. 打开这篇的文献笔记, 核对顶部属性里自动识别的 理论 / 变量 / 方法 / 样本, 写上 主要结论
+4. 把 `status` 从 未读 改成 已读
+
+## 写论文时插引用
+
+1. **Word 插件**: Word 顶部有 `Zotero` 选项卡就说明装好了. 没有的话: Zotero → 编辑 → 设置 → 引用
+   → 文字处理软件 → 安装 Microsoft Word 加载项
+2. **引用样式**: Zotero → 编辑 → 设置 → 引用 → 样式 → 获取更多样式, 搜 `GB/T 7714`, 装
+   `China National Standard GB/T 7714-2015 (numeric, 中文)` (顺序编码制, 正文里是 [1] [2])
+   或 `China National Standard GB/T 7714-2015 (author-date, 中文)` (著者-出版年制).
+   学校有自己的格式要求的话以学校模板为准; Zotero 中文社区 (zotero-chinese.com/styles)
+   有不少学校的学位论文样式
+3. **在 Word 里**: `Zotero` 选项卡 → Add/Edit Citation 插入引用; 写完点 Add/Edit Bibliography
+   自动生成参考文献表. 调整段落顺序后序号会自动重排
+4. **中英文混排**: 要让中文文献写"等"、英文写"et al.", 每条文献的"语言"字段得是 `zh-CN` 或
+   `en-US` (不能写"中文""English"). paperkit 导出的 .ris 已经按标题自动填好了;
+   你自己拖进 Zotero 的 PDF 要在右侧信息栏里手动填一下
+
+## 常用命令
+
+在 PowerShell 里先 `cd $HOME\\paperkit`, 然后:
+
+| 想做什么 | 命令 |
+|---|---|
+| 重新找关联论文 (建议每月一次) | `{PY} paperkit.py discover --seeds seeds.txt --out papers --vault {v} --have-seeds --prune` |
+| 改了分节规则或笔记属性后, 刷新大纲、矩阵、统计 (不联网) | `{PY} paperkit.py outline --vault {v}` |
+| 从一个文件夹的 PDF 生成种子清单 | `{PY} paperkit.py seeds --from-pdfs "PDF 所在文件夹"` |
+| 检查环境 | `{PY} paperkit.py doctor --vault {v}` |
+
+分节规则: `{themes_path}`
+"""
+    guide_dir = vault / "00-面板"
+    guide_dir.mkdir(parents=True, exist_ok=True)
+    (guide_dir / f"{GUIDE_NOTE}.md").write_text(text, encoding="utf-8")
 
 
 def cmd_outline(args: argparse.Namespace) -> int:
@@ -2352,6 +2836,11 @@ def cmd_discover(args: argparse.Namespace) -> int:
         )
         log("  ✓ 主题地图.md")
         build_outline(vault, Path(args.themes).expanduser() if args.themes else THEMES_PATH)
+
+    # 必须在覆盖 paperkit-result.json 之前: 没有追踪记录时, 上一次的结果就是基准
+    news = track_literature(out, final, candidates, this_year)
+    if vault:
+        write_news(vault / "30-论文地图", news, this_year)
 
     (out / "paperkit-result.json").write_text(
         json.dumps(
