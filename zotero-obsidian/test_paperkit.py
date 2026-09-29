@@ -1431,3 +1431,90 @@ class TestVersionFingerprint(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(pk.sys, "stderr", buf):
             pk.main(["seeds", "--from-pdfs", tmp, "--out", str(Path(tmp) / "s.txt")])
         self.assertIn(f"paperkit {pk.script_id()}", buf.getvalue().splitlines()[0])
+
+
+class TestPdfYieldAfterFirstRealRun(unittest.TestCase):
+    """真实跑下来 60 篇只下到 4 篇, 统计还把主动跳过的种子算成"没有开放获取"."""
+
+    def test_all_open_access_locations_are_collected(self):
+        w = work("W7", "T", 2020, 1)
+        w["best_oa_location"] = {"is_oa": True, "pdf_url": None, "source": {}}
+        w["locations"] = [
+            {"is_oa": False, "pdf_url": "https://paywalled.example/x.pdf"},
+            {"is_oa": True, "pdf_url": "https://www.mdpi.com/x/pdf"},
+            {"is_oa": True, "pdf_url": "https://europepmc.org/x.pdf"},
+            {"is_oa": True, "pdf_url": "https://www.mdpi.com/x/pdf"},   # 重复
+        ]
+        p = pk.Paper.from_json(w)
+        self.assertEqual(p.pdf_urls, ["https://www.mdpi.com/x/pdf", "https://europepmc.org/x.pdf"])
+
+    def test_best_location_is_tried_first(self):
+        w = work("W8", "T", 2020, 1, pdf="https://best.example/a.pdf")
+        w["locations"] = [{"is_oa": True, "pdf_url": "https://other.example/b.pdf"}]
+        self.assertEqual(pk.Paper.from_json(w).pdf_urls,
+                         ["https://best.example/a.pdf", "https://other.example/b.pdf"])
+
+    def test_locations_are_requested_from_openalex(self):
+        self.assertIn("locations", pk.WORK_FIELDS.split(","))
+
+    def test_pdf_download_looks_like_a_browser(self):
+        # MDPI、Frontiers 等会拦截 python-urllib, 返回网页而不是 PDF
+        import io
+        from unittest import mock
+        seen = {}
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            seen.update({k.lower(): v for k, v in req.header_items()})
+            return Resp(b"%PDF-1.7 body")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(pk.urllib.request, "urlopen", fake_urlopen):
+            self.assertTrue(pk.download_pdf("https://www.mdpi.com/x/pdf", Path(tmp) / "a.pdf"))
+        self.assertIn("Mozilla/5.0", seen["user-agent"])
+        self.assertIn("application/pdf", seen["accept"])
+
+    def run_discover(self, fake_download, extra=()):
+        import io
+        from unittest import mock
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seeds = root / "s.txt"
+            seeds.write_text("10.1000/seed1\n10.1000/seed2\n", encoding="utf-8")
+            CORPUS["W1"]["best_oa_location"]["pdf_url"] = "https://example.org/seed1.pdf"
+            CORPUS["W201"]["locations"] = [{"is_oa": True, "pdf_url": "https://mirror.example/w201.pdf"}]
+            CORPUS["W201"]["best_oa_location"]["pdf_url"] = "https://blocked.example/w201.pdf"
+            try:
+                with mock.patch.object(pk, "Client", lambda **kw: FakeClient()), \
+                     mock.patch.object(pk, "download_pdf", fake_download), \
+                     mock.patch.object(pk.sys, "stderr", buf):
+                    pk.main(["discover", "--seeds", str(seeds), "--out", str(root / "o"), *extra])
+            finally:
+                CORPUS["W1"]["best_oa_location"]["pdf_url"] = None
+                CORPUS["W201"].pop("locations", None)
+                CORPUS["W201"]["best_oa_location"]["pdf_url"] = None
+        return buf.getvalue()
+
+    def test_falls_back_to_the_next_location_when_one_is_blocked(self):
+        tried = []
+        def dl(url, dest, timeout=60):
+            tried.append(url)
+            return "blocked" not in url
+        self.run_discover(dl)
+        self.assertEqual([u for u in tried if "w201" in u],
+                         ["https://blocked.example/w201.pdf", "https://mirror.example/w201.pdf"])
+
+    def test_summary_separates_skipped_seeds_failed_downloads_and_closed_papers(self):
+        def dl(url, dest, timeout=60):
+            return "mirror" in url           # 只有 W201 的镜像能下
+        out = self.run_discover(dl, extra=["--have-seeds"])
+        line = next(l for l in out.splitlines() if "拿到" in l)
+        self.assertIn("拿到 1 篇", line)
+        self.assertIn("下载失败", line)       # W100/W200 有链接但下不来
+        self.assertIn("没有开放获取", line)
+        self.assertIn("跳过 2 篇种子", line)  # --have-seeds 主动跳过, 不能算成"没有开放获取"
+        self.assertIn("查找可用的 PDF", out)  # 告诉用户 Zotero 能接着抓

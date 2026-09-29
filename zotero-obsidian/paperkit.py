@@ -154,6 +154,7 @@ WORK_FIELDS = ",".join(
         "related_works",
         "primary_location",
         "best_oa_location",
+        "locations",
         "authorships",
         "abstract_inverted_index",
     ]
@@ -192,6 +193,8 @@ class Paper:
     pdf_url: str | None
     is_oa: bool
     type: str | None = None
+    # 所有开放获取副本的 PDF 地址, 最推荐的排第一. 出版社那份常被拦, 还有 PMC、机构仓库可试.
+    pdf_urls: list[str] = field(default_factory=list)
 
     # 打分过程中填充
     score: float = 0.0
@@ -213,6 +216,13 @@ class Paper:
             if name:
                 authors.append(name)
         doi = w.get("doi") or ""
+        urls: list[str] = []
+        for cand in [w.get("best_oa_location") or {}] + [
+            l for l in (w.get("locations") or []) if isinstance(l, dict) and l.get("is_oa")
+        ]:
+            u = cand.get("pdf_url")
+            if u and u not in urls:
+                urls.append(u)
         return cls(
             oid=short_id(w.get("id")),
             title=(w.get("title") or w.get("display_name") or "(无标题)").strip(),
@@ -227,6 +237,7 @@ class Paper:
             pdf_url=(loc or {}).get("pdf_url"),
             is_oa=bool((loc or {}).get("is_oa")),
             type=w.get("type"),
+            pdf_urls=urls,
         )
 
     @property
@@ -487,10 +498,20 @@ def assign_tiers(ranked: list[Paper], n_s: int, n_a: int) -> None:
 # --------------------------------------------------------------------------
 
 
+# MDPI、Frontiers 等出版社会拦截非浏览器请求, 返回网页而不是 PDF.
+# 下的都是开放获取的文章, 用浏览器的请求头即可.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
 def download_pdf(url: str, dest: Path, timeout: int = 60) -> bool:
     """下载开放获取 PDF. 只接受真的是 PDF 的响应, 免得存下一堆登录页 HTML."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        req = urllib.request.Request(
+            url, headers={"User-Agent": BROWSER_UA, "Accept": "application/pdf,*/*;q=0.8"}
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             head = resp.read(5)
             if head[:4] != b"%PDF":
@@ -1743,7 +1764,8 @@ def cmd_seeds(args: argparse.Namespace) -> int:
     for how, n in how_count.most_common():
         log(f"  {how}: {n}")
     if unknown:
-        log(f"  认不出: {len(unknown)} 篇 (扫描版或文件名是一串编号, 可以手动把标题写进清单)")
+        log(f"  认不出: {len(unknown)} 篇 (PDF 里没有能可靠认出的 DOI 或标题, "
+            "打开首页找到 DOI 手动补进清单)")
     if how_count.get("PDF 标题") or how_count.get("文件名"):
         log("按标题认的不一定准, discover 时看一眼每条种子匹配到的论文对不对.")
     return 0
@@ -1871,21 +1893,39 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
     if not args.no_pdf:
         log("→ 下载开放获取 PDF …")
-        ok = 0
+        ok = failed = closed = skipped = 0
         for p in final:
-            if not p.pdf_url or (p.is_seed and args.have_seeds):
+            if p.is_seed and args.have_seeds:
+                skipped += 1
+                continue
+            if not p.pdf_urls:
+                closed += 1
                 continue
             dest = out / TIER_DIRS[p.tier] / f"{p.slug()}.pdf"
             if dest.exists():
                 p.pdf_path = str(dest.resolve())
                 ok += 1
                 continue
-            if download_pdf(p.pdf_url, dest):
-                p.pdf_path = str(dest.resolve())
-                ok += 1
-                log(f"  ↓ [{p.tier}] {p.slug()[:64]}")
-        closed = sum(1 for p in final if not p.pdf_path)
-        log(f"  拿到 {ok} 篇 PDF, {closed} 篇没有开放获取版本 (Zotero 里可以再试抓取)")
+            # 挨个试所有开放副本: 出版社那份被拦了, PMC 或机构仓库的常常能下.
+            for url in p.pdf_urls:
+                if download_pdf(url, dest):
+                    p.pdf_path = str(dest.resolve())
+                    ok += 1
+                    log(f"  ↓ [{p.tier}] {p.slug()[:64]}")
+                    break
+            else:
+                failed += 1
+        parts = [f"拿到 {ok} 篇 PDF"]
+        if failed:
+            parts.append(f"{failed} 篇有开放链接但下载失败 (出版社拦截或链接失效)")
+        if closed:
+            parts.append(f"{closed} 篇没有开放获取版本")
+        if skipped:
+            parts.append(f"跳过 {skipped} 篇种子 (--have-seeds)")
+        log("  " + ", ".join(parts))
+        if failed or closed:
+            log("  导入 Zotero 后全选这些条目 → 右键 → 查找可用的 PDF, "
+                "Zotero 会用自己的渠道 (含学校订阅) 再抓一遍")
 
     # 每级一个 RIS: Zotero 里 "导入到新分类" 会拿文件名当分类名, 分级就自动建好了.
     for tier, name in TIERS:
