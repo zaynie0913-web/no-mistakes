@@ -10,60 +10,58 @@
 手动读文献的三个卡点：找关联论文靠运气、下下来堆在一个文件夹里分不清主次、
 读的时候划了线但笔记散在 PDF 里回不到笔记库。这个工具把这三段接起来。
 
-## Windows 用户先看
+## 一键安装
 
-下文命令按 macOS/Linux 写。在 PowerShell 里有两处要换：
-
-- `python3` 换成 `py`（没有 `py` 就用 `python`）
-- 反斜杠 `\` 换行是 bash 语法，PowerShell 不认。把命令**写成一行**，
-  路径带空格的一律加英文双引号
+**先把 Obsidian 彻底关掉**，然后在 PowerShell 里粘贴这一整行：
 
 ```powershell
-py paperkit.py setup --vault "C:\Users\你\Documents\Research"
+mkdir -Force $HOME\paperkit | Out-Null; cd $HOME\paperkit; iwr -UseBasicParsing https://raw.githubusercontent.com/zaynie0913-web/no-mistakes/claude/zotero-obsidian-integration-oxvv2t/zotero-obsidian/paperkit.py -OutFile paperkit.py; py -3 paperkit.py install
 ```
 
-没装 Python：`winget install -e --id Python.Python.3.12`，装完**重开**
-PowerShell 再试。
-
-## 一次性配置
-
-### 1. Zotero 侧
-
-1. Zotero 7（已装则跳过）
-2. 装 **Better BibTeX**：从
-   [releases](https://github.com/retorquere/zotero-better-bibtex/releases/latest)
-   下载 `.xpi`（Firefox 用户要右键「另存为」，否则 Firefox 会试图把它装给自己）→
-   Zotero → **工具 → 插件** → 右上角齿轮 → 从文件安装插件 → 重启 Zotero
-3. 建自动导出：左栏右键「我的文库」→ 导出文库… → 格式选 **Better BibTeX** →
-   勾选 **保持更新** → 存到 **Obsidian 库根目录**，文件名 `library.bib`。
-   之后 Zotero 里每次增删改都会自动同步这个文件
-
-### 2. Obsidian 侧
+macOS / Linux：
 
 ```bash
-python3 paperkit.py setup --vault ~/Documents/Obsidian/Research
+mkdir -p ~/paperkit && cd ~/paperkit && curl -fsSLo paperkit.py https://raw.githubusercontent.com/zaynie0913-web/no-mistakes/claude/zotero-obsidian-integration-oxvv2t/zotero-obsidian/paperkit.py && python3 paperkit.py install
 ```
 
-会建好目录、写入模板和阅读面板，并打印插件清单。然后在 Obsidian 里装：
+`install` 会依次：
 
-| 插件 | 用途 | 必需 |
-|---|---|---|
-| Zotero Integration | 把 Zotero 里的彩色标注拉进笔记 | 是 |
-| Dataview | 渲染阅读面板 | 是 |
-| Templater | 新建永久笔记时自动套模板 | 否 |
+1. 从 Obsidian 自己的库列表里找到你的库（有多个会让你选）
+2. 建好目录、笔记模板、阅读面板
+3. 从 Obsidian 官方插件注册表查到 **Dataview** 和 **Zotero Integration** 的仓库，
+   按仓库 manifest 里的版本号下载（和 Obsidian 自己装插件的方式一致），并加入启用列表
+4. 给 Zotero Integration 预先配好导入格式「导入文献笔记」
+5. 没装 Better BibTeX 的话，把最新 `.xpi` 下载到「下载」文件夹
+6. 在当前目录建一个 `seeds.txt`
 
-Zotero Integration 设置 → Import Formats → 新建一条：
+只剩两件事要手动点，装完会列出来：Obsidian 里开启社区插件（本来开着就跳过），
+以及在 Zotero 里装那个 `.xpi`（**工具 → 插件 → 右上角齿轮 → 从文件安装插件**）。
+Zotero 不提供命令行装插件的途径，这一步绕不开。
 
-- **Output Path**：`10-文献笔记/{{citekey}}.md`
-- **Template File**：`90-模板/literature-note.md`
+重复运行是安全的：已装的插件不重装，你改过的模板和 `seeds.txt` 不会被覆盖，
+你原有的插件和 Zotero Integration 设置都会保留。
 
-### 3. 体检
+**为什么要先关 Obsidian**：Obsidian 开着时改插件列表没用，它退出时会用内存里
+的旧列表覆盖回去。检测到它开着，`install` 会停下来等你关。
 
-```bash
-python3 paperkit.py doctor --vault ~/Documents/Obsidian/Research
+### 体检
+
+装完、**Zotero 开着**的时候跑：
+
+```powershell
+py paperkit.py doctor --vault "C:\Users\你\Documents\Research"
 ```
 
-每一项都打勾才算真的接上了。
+它检查目录、模板、两个插件是否**已安装且已启用**，以及 Zotero 里的
+Better BibTeX 能不能连上。
+
+不需要 `.bib` 文件：Zotero Integration 直接调用 Better BibTeX 的本地接口，
+从来不读 `.bib`。
+
+### Windows 命令写法
+
+下文其余命令按 macOS/Linux 写。PowerShell 里 `python3` 换成 `py`；
+反斜杠 `\` 换行 PowerShell 不认，把命令写成一行；路径带空格的加英文双引号。
 
 ## 日常用法
 
@@ -127,8 +125,9 @@ python3 paperkit.py discover \
 | 🟢 绿 | 可复用的方法 |
 | 🔵 蓝 | 待深挖 |
 
-读完在 Obsidian 里执行 `Zotero Integration: Import notes` 拉取，划的线就落到
-对应小节。笔记 frontmatter 里的 `status` 手动改 `未读 → 在读 → 已读`，
+读完在 Obsidian 里按 `Ctrl+P` 打开命令面板，执行 **`Zotero Integration: 导入文献笔记`**，
+选中论文，划的线就落到对应小节。（插件会给每个导入格式注册一条同名命令，
+所以命令名就是 `install` 配好的那个格式名。）笔记 frontmatter 里的 `status` 手动改 `未读 → 在读 → 已读`，
 `00-面板/阅读面板.md` 会自动跟着变。
 
 ## 已知边界
@@ -137,8 +136,9 @@ python3 paperkit.py discover \
   Zotero 里另行抓取。工具会校验响应确实是 PDF，不会把登录页存成 `.pdf`。
 - **重跑不会覆盖你改过的笔记**，默认跳过已存在的文件。要重建加 `--force`。
 - **Obsidian 的 Zotero Integration 插件已停更**——最后一版 3.2.1 停在 2024-08，
-  仓库已迁到 `community-archive/`。目前仍能正常工作，但它是这条链路上唯一没人
-  维护的一环，心里有数。备选是走 Zotero 7 Local API 的 Zotero Bridge。
+  仓库先迁到 `community-archive/`，现在又挂在 `obsidian-community/` 下。目前仍能
+  正常工作，但它是这条链路上唯一没人维护的一环，心里有数。`install` 每次都从
+  Obsidian 官方注册表查它的当前地址，仓库再搬家也不会下错。备选是走 Zotero 7 Local API 的 Zotero Bridge。
 - RIS 里带了 `L1` 本地 PDF 路径，Zotero 导入时**可能**自动挂上附件，也可能不挂；
   不挂也没关系，PDF 本来就按分级躺在 `--out` 目录里。
 
@@ -148,6 +148,14 @@ python3 paperkit.py discover \
 python3 -m unittest test_paperkit -v
 ```
 
-30 个测试，全部离线：用一份按 OpenAlex 官方字段结构伪造的假 API 把
-`discover` 整条流水线跑通，覆盖打分排序、分级、RIS 格式、YAML 注入、
-重跑幂等、种子解析失败的降级，以及"HTML 登录页不能被存成 PDF"。
+67 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
+
+- **discover**：用按 OpenAlex 官方字段结构伪造的假 API 跑通整条流水线，
+  覆盖打分排序、分级、RIS 格式、YAML 注入、重跑幂等、种子解析失败的降级，
+  以及「HTML 登录页不能被存成 PDF」
+- **笔记模板**：把插件源码里的颜色分类函数逐行移植进测试，钉死 Zotero 7 的
+  四个默认标注色确实落在模板过滤的四个分类里，并且模板只用插件真正支持的
+  过滤命令和变量
+- **install**：找库、插件下载与版本锁定、启用列表合并、插件配置合并、
+  Better BibTeX 检测与下载、网络失败时本地步骤照常完成、Obsidian 开着时拒绝改插件
+- **Windows**：带 BOM 的种子文件、GBK 终端输出、GBK 的 `tasklist` 输出

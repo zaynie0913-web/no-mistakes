@@ -5,6 +5,7 @@ discover 流水线跑通: 打分/分级/RIS/笔记/地图 全部走真代码路�
 """
 
 import json
+import unittest.mock
 import re
 import sys
 import tempfile
@@ -407,3 +408,445 @@ class TestWindowsRobustness(unittest.TestCase):
         finally:
             sys.stderr = real
         self.assertEqual(rc, 0)
+
+
+# --------------------------------------------------------------------------
+# 模板必须和 Zotero Integration 插件源码对得上
+# --------------------------------------------------------------------------
+
+def zi_color_category(hexstr):
+    """逐行移植自插件源码 src/bbt/helpers.ts 的 hexToHSL + getColorCategory."""
+    r, g, b = (int(hexstr[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    cmin, cmax = min(r, g, b), max(r, g, b)
+    delta = cmax - cmin
+    if delta == 0:
+        h = 0.0
+    elif cmax == r:
+        h = ((g - b) / delta) % 6
+    elif cmax == g:
+        h = (b - r) / delta + 2
+    else:
+        h = (r - g) / delta + 4
+    h = round(h * 60)
+    if h < 0:
+        h += 360
+    l = (cmax + cmin) / 2
+    s = 0 if delta == 0 else delta / (1 - abs(2 * l - 1))
+    s, l = s * 100, l * 100
+    if l < 12: return "Black"
+    if l > 98: return "White"
+    if s < 2: return "Gray"
+    for bound, name in [(15, "Red"), (45, "Orange"), (65, "Yellow"), (170, "Green"),
+                        (190, "Cyan"), (255, "Blue"), (280, "Purple"), (335, "Magenta")]:
+        if h < bound:
+            return name
+    return "Red"
+
+
+# Zotero 7 阅读器的默认标注色
+ZOTERO_COLORS = {"#ffd400": "Yellow", "#ff6666": "Red", "#5fb236": "Green", "#2ea8e5": "Blue"}
+# 插件 filterBy 真正支持的命令 (src/bbt/template.env.ts FilterByCmd)
+ZI_FILTER_CMDS = {"startswith", "endswith", "contains",
+                  "dateafter", "dateonorafter", "datebefore", "dateonorbefore"}
+
+
+class TestTemplateMatchesPluginSource(unittest.TestCase):
+    def test_zotero_default_colours_land_in_the_four_categories(self):
+        for hexstr, want in ZOTERO_COLORS.items():
+            self.assertEqual(zi_color_category(hexstr), want, hexstr)
+
+    def test_template_only_uses_filter_commands_the_plugin_supports(self):
+        # 之前用的 "eq" 插件不认, filterBy 会一路落到 return false,
+        # 四个颜色小节永远是空的, 而且不报错.
+        cmds = re.findall(r'filterby\("[^"]+",\s*"([^"]+)"', pk.ZI_TEMPLATE)
+        self.assertTrue(cmds)
+        for c in cmds:
+            self.assertIn(c, ZI_FILTER_CMDS)
+
+    def test_every_colour_section_matches_a_zotero_default_colour(self):
+        wanted = re.findall(r'filterby\("colorCategory",\s*"startswith",\s*"([^"]+)"\)',
+                            pk.ZI_TEMPLATE)
+        self.assertEqual(sorted(wanted), sorted(v.lower() for v in ZOTERO_COLORS.values()))
+
+    def test_template_uses_variables_the_plugin_actually_sets(self):
+        self.assertNotIn("pdfZoteroLink", pk.ZI_TEMPLATE)   # 插件里不存在这个变量
+        self.assertIn("{{desktopURI}}", pk.ZI_TEMPLATE)     # export.ts 第 279 行
+
+    def test_missing_date_does_not_leak_an_error_string_into_frontmatter(self):
+        # 论文没日期时 date 是 null, 裸调 format 会输出一串报错文字.
+        head = pk.ZI_TEMPLATE.split("---")[1]
+        self.assertRegex(head, r"\{% if date %\}\{\{date \| format\(\"YYYY\"\)\}\}\{% endif %\}")
+
+
+# --------------------------------------------------------------------------
+# install: 一键安装
+# --------------------------------------------------------------------------
+
+REGISTRY = json.dumps([
+    {"id": "dataview", "repo": "blacksmithgu/obsidian-dataview"},
+    {"id": "obsidian-zotero-desktop-connector",
+     "repo": "obsidian-community/obsidian-zotero-integration"},
+]).encode()
+
+
+def fake_web(missing=(), fail=()):
+    """按 URL 返回假内容. missing 里的返回 None (404), fail 里的抛网络错误."""
+    def get(url, timeout=30):
+        for key in fail:
+            if key in url:
+                raise OSError(f"网络不通: {url}")
+        for key in missing:
+            if key in url:
+                return None
+        if url == pk.PLUGIN_REGISTRY:
+            return REGISTRY
+        if "api.github.com/repos/retorquere/zotero-better-bibtex" in url:
+            return json.dumps({"assets": [
+                {"name": "zotero-better-bibtex-9.0.64.xpi.sha256", "browser_download_url": "https://x/sha"},
+                {"name": "zotero-better-bibtex-9.0.64.xpi", "browser_download_url": "https://x/bbt.xpi"},
+            ]}).encode()
+        if url == "https://x/bbt.xpi":
+            return b"PK\x03\x04fake-xpi"
+        if url.startswith("https://raw.githubusercontent.com/") and url.endswith("/HEAD/manifest.json"):
+            repo = url.split("raw.githubusercontent.com/", 1)[1].rsplit("/HEAD/", 1)[0]
+            pid = {"blacksmithgu/obsidian-dataview": "dataview"}.get(
+                repo, "obsidian-zotero-desktop-connector")
+            return json.dumps({"id": pid, "version": "1.2.3"}).encode()
+        if "/releases/download/" in url or "/releases/latest/download/" in url:
+            return f"// {url.rsplit('/', 1)[-1]}".encode()
+        raise AssertionError(f"没覆盖到的 URL: {url}")
+    return get
+
+
+def write_obsidian_json(cfg_dir, vaults):
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "obsidian.json").write_text(json.dumps({"vaults": {
+        f"id{i}": {"path": str(p), "ts": ts, "open": i == 0}
+        for i, (p, ts) in enumerate(vaults)
+    }}), encoding="utf-8")
+
+
+class TestFindVaults(unittest.TestCase):
+    def test_lists_existing_vaults_most_recent_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old, new = root / "旧库", root / "Research"
+            old.mkdir(); new.mkdir()
+            write_obsidian_json(root / "cfg", [(old, 100), (new, 900), (root / "已删除", 999)])
+            self.assertEqual(pk.find_vaults(root / "cfg"), [new, old])
+
+    def test_no_config_or_broken_config_means_no_vaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp)
+            self.assertEqual(pk.find_vaults(cfg), [])
+            (cfg / "obsidian.json").write_text("{broken", encoding="utf-8")
+            self.assertEqual(pk.find_vaults(cfg), [])
+
+
+class TestChooseVault(unittest.TestCase):
+    def test_single_vault_is_used_without_asking(self):
+        v = Path("/v")
+        ask = unittest.mock.Mock(side_effect=AssertionError("不该问"))
+        self.assertEqual(pk.choose_vault([v], ask), v)
+
+    def test_multiple_vaults_pick_by_number_and_retry_on_garbage(self):
+        a, b = Path("/a"), Path("/b")
+        ask = unittest.mock.Mock(side_effect=["x", "9", "2"])
+        self.assertEqual(pk.choose_vault([a, b], ask), b)
+        self.assertEqual(ask.call_count, 3)
+
+    def test_no_vault_asks_for_a_path_until_it_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ask = unittest.mock.Mock(side_effect=["/不存在的路径", f'"{tmp}"'])
+            self.assertEqual(pk.choose_vault([], ask), Path(tmp))
+
+    def test_empty_answer_aborts_instead_of_looping_forever(self):
+        ask = unittest.mock.Mock(side_effect=[""])
+        self.assertIsNone(pk.choose_vault([], ask))
+
+
+class TestPlugins(unittest.TestCase):
+    def test_install_downloads_release_assets_into_plugin_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            reg = pk.load_plugin_registry(fake_web())
+            pk.install_plugin(vault, "dataview", reg, fake_web())
+            folder = vault / ".obsidian" / "plugins" / "dataview"
+            self.assertEqual((folder / "main.js").read_text(), "// main.js")
+            self.assertTrue((folder / "manifest.json").exists())
+            self.assertTrue((folder / "styles.css").exists())
+
+    def test_repo_is_resolved_from_registry_not_hardcoded(self):
+        # Zotero Integration 已经搬过两次家, 写死地址迟早下错.
+        seen = []
+        web = fake_web()
+        def spy(url, timeout=30):
+            seen.append(url)
+            return web(url, timeout)
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(spy)
+            pk.install_plugin(Path(tmp), "obsidian-zotero-desktop-connector", reg, spy)
+        self.assertTrue(any("obsidian-community/obsidian-zotero-integration" in u for u in seen))
+
+    def test_missing_styles_css_is_fine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(fake_web())
+            pk.install_plugin(Path(tmp), "dataview", reg, fake_web(missing=["styles.css"]))
+            self.assertTrue((Path(tmp) / ".obsidian/plugins/dataview/main.js").exists())
+
+    def test_missing_main_js_fails_and_leaves_no_half_installed_plugin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(fake_web())
+            with self.assertRaises(RuntimeError):
+                pk.install_plugin(Path(tmp), "dataview", reg, fake_web(missing=["main.js"]))
+            self.assertFalse((Path(tmp) / ".obsidian/plugins/dataview/manifest.json").exists())
+
+    def test_unknown_plugin_id_fails_clearly(self):
+        reg = pk.load_plugin_registry(fake_web())
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                pk.install_plugin(Path(tmp), "no-such-plugin", reg, fake_web())
+
+    def test_enable_merges_without_dropping_or_duplicating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            (vault / ".obsidian").mkdir()
+            f = vault / ".obsidian" / "community-plugins.json"
+            f.write_text(json.dumps(["calendar", "dataview"]))
+            pk.enable_plugins(vault, ["dataview", "obsidian-zotero-desktop-connector"])
+            self.assertEqual(json.loads(f.read_text()),
+                             ["calendar", "dataview", "obsidian-zotero-desktop-connector"])
+
+    def test_enable_creates_the_list_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pk.enable_plugins(Path(tmp), ["dataview"])
+            f = Path(tmp) / ".obsidian" / "community-plugins.json"
+            self.assertEqual(json.loads(f.read_text()), ["dataview"])
+
+
+class TestZoteroIntegrationConfig(unittest.TestCase):
+    def data(self, vault):
+        return vault / ".obsidian/plugins/obsidian-zotero-desktop-connector/data.json"
+
+    def test_fresh_config_gets_our_import_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self.assertTrue(pk.configure_zotero_integration(vault))
+            cfg = json.loads(self.data(vault).read_text(encoding="utf-8"))
+            fmt = cfg["exportFormats"][0]
+            # 字段名来自插件 src/types.ts 的 ExportFormat
+            self.assertEqual(fmt["name"], pk.ZI_FORMAT_NAME)
+            self.assertEqual(fmt["outputPathTemplate"], "10-文献笔记/{{citekey}}.md")
+            self.assertEqual(fmt["templatePath"], "90-模板/literature-note.md")
+            self.assertIn("imageOutputPathTemplate", fmt)
+            self.assertIn("imageBaseNameTemplate", fmt)
+
+    def test_existing_settings_and_formats_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self.data(vault).parent.mkdir(parents=True)
+            self.data(vault).write_text(json.dumps({
+                "database": "Zotero", "citeFormats": [{"name": "我的引用"}],
+                "exportFormats": [{"name": "我自己的格式", "outputPathTemplate": "x.md"}],
+            }), encoding="utf-8")
+            pk.configure_zotero_integration(vault)
+            pk.configure_zotero_integration(vault)   # 跑两次不能重复加
+            cfg = json.loads(self.data(vault).read_text(encoding="utf-8"))
+            self.assertEqual([f["name"] for f in cfg["exportFormats"]],
+                             ["我自己的格式", pk.ZI_FORMAT_NAME])
+            self.assertEqual(cfg["citeFormats"], [{"name": "我的引用"}])
+
+    def test_corrupt_config_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            self.data(vault).parent.mkdir(parents=True)
+            self.data(vault).write_text("{not json", encoding="utf-8")
+            self.assertFalse(pk.configure_zotero_integration(vault))
+            self.assertEqual(self.data(vault).read_text(encoding="utf-8"), "{not json")
+
+
+class TestBetterBibTeX(unittest.TestCase):
+    def test_detects_installed_xpi_in_any_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p1, p2 = Path(tmp) / "a.default", Path(tmp) / "b.default"
+            (p1 / "extensions").mkdir(parents=True)
+            (p2 / "extensions").mkdir(parents=True)
+            self.assertFalse(pk.bbt_installed([p1, p2]))
+            (p2 / "extensions" / f"{pk.BBT_ID}.xpi").write_bytes(b"x")
+            self.assertTrue(pk.bbt_installed([p1, p2]))
+
+    def test_downloads_the_xpi_not_the_checksum(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = pk.download_bbt(Path(tmp), fake_web())
+            self.assertEqual(dest.name, "zotero-better-bibtex-9.0.64.xpi")
+            self.assertEqual(dest.read_bytes(), b"PK\x03\x04fake-xpi")
+
+
+class TestInstallCommand(unittest.TestCase):
+    def run_install(self, root, web=None, running=False, argv=()):
+        from unittest import mock
+        vault = root / "Research"
+        vault.mkdir(exist_ok=True)
+        cfg = root / "cfg"
+        write_obsidian_json(cfg, [(vault, 1)])
+        profile = root / "zotero" / "x.default"
+        (profile / "extensions").mkdir(parents=True, exist_ok=True)
+        work = root / "work"
+        work.mkdir(exist_ok=True)
+        with mock.patch.object(pk, "http_get", web or fake_web()), \
+             mock.patch.object(pk, "obsidian_config_dir", lambda: cfg), \
+             mock.patch.object(pk, "zotero_profile_dirs", lambda: [profile]), \
+             mock.patch.object(pk, "downloads_dir", lambda: root / "dl"), \
+             mock.patch.object(pk, "obsidian_running", lambda: running), \
+             mock.patch.object(pk, "bbt_live", lambda: False), \
+             mock.patch("builtins.input", lambda *_: ""), \
+             mock.patch.object(pk.Path, "cwd", lambda: work):
+            rc = pk.main(["install", *argv])
+        return rc, vault, work
+
+    def test_one_shot_install_wires_everything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rc, vault, work = self.run_install(root)
+            for d in pk.VAULT_DIRS:
+                self.assertTrue((vault / d).is_dir(), d)
+            for pid in pk.PLUGINS:
+                self.assertTrue((vault / ".obsidian/plugins" / pid / "main.js").exists(), pid)
+            enabled = json.loads((vault / ".obsidian/community-plugins.json").read_text())
+            self.assertEqual(sorted(enabled), sorted(pk.PLUGINS))
+            self.assertTrue((vault / ".obsidian/plugins/obsidian-zotero-desktop-connector/data.json").exists())
+            self.assertTrue((work / "seeds.txt").exists())
+            self.assertTrue((root / "dl" / "zotero-better-bibtex-9.0.64.xpi").exists())
+            # 只剩 BBT 需要手动点 -> 不算失败
+            self.assertEqual(rc, 0)
+
+    def test_rerun_is_safe_and_keeps_user_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, vault, work = self.run_install(root)
+            (work / "seeds.txt").write_text("我的种子\n", encoding="utf-8")
+            tpl = vault / "90-模板" / "literature-note.md"
+            tpl.write_text("我改过的模板", encoding="utf-8")
+            self.run_install(root)
+            self.assertEqual((work / "seeds.txt").read_text(encoding="utf-8"), "我的种子\n")
+            self.assertEqual(tpl.read_text(encoding="utf-8"), "我改过的模板")
+            enabled = json.loads((vault / ".obsidian/community-plugins.json").read_text())
+            self.assertEqual(len(enabled), len(set(enabled)))
+
+    def test_network_failure_does_not_stop_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rc, vault, work = self.run_install(root, web=fake_web(fail=["github"]))
+            self.assertNotEqual(rc, 0)                       # 要报失败
+            self.assertTrue((vault / "90-模板").is_dir())     # 但本地步骤都做了
+            self.assertTrue((work / "seeds.txt").exists())
+
+    def test_refuses_to_touch_plugins_while_obsidian_is_open(self):
+        # Obsidian 开着的时候改插件列表, 它退出时会用内存里的旧列表覆盖回去.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rc, vault, _ = self.run_install(root, running=True)
+            self.assertNotEqual(rc, 0)
+            self.assertFalse((vault / ".obsidian/community-plugins.json").exists())
+
+
+class TestDoctorAfterInstall(unittest.TestCase):
+    def test_bib_file_is_not_required(self):
+        # Zotero Integration 直接走 BBT 的 JSON-RPC, 从来不读 .bib.
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            pk.main(["setup", "--vault", str(vault)])
+            for pid in pk.PLUGINS:
+                (vault / ".obsidian/plugins" / pid).mkdir(parents=True)
+                (vault / ".obsidian/plugins" / pid / "manifest.json").write_text("{}")
+            pk.enable_plugins(vault, list(pk.PLUGINS))
+            from unittest import mock
+            with mock.patch.object(pk, "bbt_live", lambda: True):
+                self.assertEqual(pk.main(["doctor", "--vault", str(vault)]), 0)
+
+    def test_installed_but_not_enabled_plugin_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            pk.main(["setup", "--vault", str(vault)])
+            for pid in pk.PLUGINS:
+                (vault / ".obsidian/plugins" / pid).mkdir(parents=True)
+                (vault / ".obsidian/plugins" / pid / "manifest.json").write_text("{}")
+            from unittest import mock
+            with mock.patch.object(pk, "bbt_live", lambda: True):
+                self.assertEqual(pk.main(["doctor", "--vault", str(vault)]), 1)
+
+    def test_zotero_not_reachable_is_flagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            pk.main(["setup", "--vault", str(vault)])
+            for pid in pk.PLUGINS:
+                (vault / ".obsidian/plugins" / pid).mkdir(parents=True)
+                (vault / ".obsidian/plugins" / pid / "manifest.json").write_text("{}")
+            pk.enable_plugins(vault, list(pk.PLUGINS))
+            from unittest import mock
+            with mock.patch.object(pk, "bbt_live", lambda: False):
+                self.assertEqual(pk.main(["doctor", "--vault", str(vault)]), 1)
+
+
+class TestPluginVersionPinning(unittest.TestCase):
+    """和 Obsidian 自己装插件的方式一致: 读仓库 manifest 的版本号, 下那个版本."""
+
+    def spy(self, web):
+        seen = []
+        def get(url, timeout=30):
+            seen.append(url)
+            return web(url, timeout)
+        return get, seen
+
+    def test_downloads_the_version_named_in_the_repo_manifest(self):
+        get, seen = self.spy(fake_web())
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(get)
+            pk.install_plugin(Path(tmp), "dataview", reg, get)
+        assets = [u for u in seen if "/releases/" in u]
+        self.assertTrue(assets)
+        self.assertTrue(all("/releases/download/1.2.3/" in u for u in assets), assets)
+
+    def test_falls_back_to_latest_when_the_versioned_asset_is_missing(self):
+        get, seen = self.spy(fake_web(missing=["/releases/download/1.2.3/main.js"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(get)
+            pk.install_plugin(Path(tmp), "dataview", reg, get)
+            self.assertTrue((Path(tmp) / ".obsidian/plugins/dataview/main.js").exists())
+        self.assertTrue(any("/releases/latest/download/main.js" in u for u in seen))
+
+    def test_falls_back_to_latest_when_manifest_is_unreadable(self):
+        get, seen = self.spy(fake_web(missing=["/HEAD/manifest.json"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(get)
+            pk.install_plugin(Path(tmp), "dataview", reg, get)
+        self.assertTrue(any("/releases/latest/download/" in u for u in seen))
+
+    def test_refuses_a_repo_whose_manifest_is_a_different_plugin(self):
+        # 注册表被篡改或仓库被转手时, 不能把别的插件装成这个 id.
+        def web(url, timeout=30):
+            if url.endswith("/HEAD/manifest.json"):
+                return json.dumps({"id": "something-else", "version": "9.9.9"}).encode()
+            return fake_web()(url, timeout)
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = pk.load_plugin_registry(web)
+            with self.assertRaises(RuntimeError):
+                pk.install_plugin(Path(tmp), "dataview", reg, web)
+            self.assertFalse((Path(tmp) / ".obsidian/plugins/dataview").exists())
+
+
+class TestObsidianRunningOnChineseWindows(unittest.TestCase):
+    def test_gbk_tasklist_output_cannot_hide_a_running_obsidian(self):
+        # 中文 Windows 的 tasklist 输出 GBK. Python 开了 UTF-8 模式时严格解码会抛错,
+        # 旧代码吞掉异常返回"没开", 结果在 Obsidian 开着时去改插件列表.
+        from unittest import mock
+
+        def fake_run(cmd, **kw):
+            if kw.get("errors") not in ("replace", "ignore"):
+                raise UnicodeDecodeError("utf-8", b"\xd0\xc5", 0, 1, "invalid")
+            return mock.Mock(stdout="Obsidian.exe  1234 Console  1  300,000 K\n", returncode=0)
+
+        import subprocess
+        with mock.patch.object(pk.sys, "platform", "win32"), \
+             mock.patch.object(subprocess, "run", fake_run):
+            self.assertTrue(pk.obsidian_running())

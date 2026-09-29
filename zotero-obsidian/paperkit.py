@@ -7,6 +7,7 @@
 纯标准库, 零依赖. Python 3.9+.
 
 用法概览:
+    python3 paperkit.py install                         # 一键安装
     python3 paperkit.py setup   --vault ~/Obsidian/Research
     python3 paperkit.py discover --seeds seeds.txt --out ./papers --mailto you@example.com
     python3 paperkit.py doctor  --vault ~/Obsidian/Research
@@ -606,41 +607,49 @@ VAULT_DIRS = ["00-面板", "10-文献笔记", "20-永久笔记", "30-论文地�
 
 # Zotero Integration 插件用的 nunjucks 模板. 按标注颜色分流到不同小节,
 # 这样"边看边写"才成立: 在 Zotero 里划完线, 回 Obsidian 一键就归好位了.
+#
+# 变量和过滤器都对照过插件源码, 别凭印象改:
+# - filterBy 只认 startswith/endswith/contains 和日期比较, 没有 eq;
+#   写 eq 不报错, 只是每个小节永远为空.
+# - colorCategory 是插件按色相把十六进制色归的类, Zotero 7 默认的
+#   黄/红/绿/蓝 分别落在 Yellow/Red/Green/Blue.
+# - 条目的 Zotero 链接叫 desktopURI; 没有 pdfZoteroLink 这个变量.
+# - date 在条目没日期时是 null, 必须先判断再 format.
 ZI_TEMPLATE = """---
 citekey: {{citekey}}
 title: "{{title}}"
-year: {{date | format("YYYY")}}
+year: {% if date %}{{date | format("YYYY")}}{% endif %}
 authors: [{% for a in creators %}"{{a.firstName}} {{a.lastName}}"{% if not loop.last %}, {% endif %}{% endfor %}]
 doi: {{DOI}}
-zotero: "{{pdfZoteroLink}}"
+zotero: "{{desktopURI}}"
 status: 在读
 tags: [论文]
 ---
 
 # {{title}}
 
-[在 Zotero 中打开]({{pdfZoteroLink}}){% if DOI %} · [DOI](https://doi.org/{{DOI}}){% endif %}
+[在 Zotero 中打开]({{desktopURI}}){% if DOI %} · [DOI](https://doi.org/{{DOI}}){% endif %}
 
 ## 🟡 关键结论
-{% for annot in annotations | filterby("color", "eq", "#ffd400") %}
+{% for annot in annotations | filterby("colorCategory", "startswith", "yellow") %}
 - {{annot.annotatedText}} `p.{{annot.page}}`{% if annot.comment %}
   - 💭 {{annot.comment}}{% endif %}
 {% endfor %}
 
 ## 🔴 存疑与反对
-{% for annot in annotations | filterby("color", "eq", "#ff6666") %}
+{% for annot in annotations | filterby("colorCategory", "startswith", "red") %}
 - {{annot.annotatedText}} `p.{{annot.page}}`{% if annot.comment %}
   - 💭 {{annot.comment}}{% endif %}
 {% endfor %}
 
 ## 🟢 可复用的方法
-{% for annot in annotations | filterby("color", "eq", "#5fb236") %}
+{% for annot in annotations | filterby("colorCategory", "startswith", "green") %}
 - {{annot.annotatedText}} `p.{{annot.page}}`{% if annot.comment %}
   - 💭 {{annot.comment}}{% endif %}
 {% endfor %}
 
 ## 🔵 待深挖
-{% for annot in annotations | filterby("color", "eq", "#2ea8e5") %}
+{% for annot in annotations | filterby("colorCategory", "startswith", "blue") %}
 - {{annot.annotatedText}} `p.{{annot.page}}`{% if annot.comment %}
   - 💭 {{annot.comment}}{% endif %}
 {% endfor %}
@@ -735,6 +744,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     log(f"✓ 库结构就绪: {vault}")
     for w in written:
         log(f"  + {w}")
+    if getattr(args, "quiet", False):
+        return 0
     log("")
     log("接下来在 Obsidian 里装这三个社区插件:")
     log("  1. Zotero Integration  — 从 Zotero 拉标注 (需要 Zotero 装 Better BibTeX)")
@@ -745,6 +756,416 @@ def cmd_setup(args: argparse.Namespace) -> int:
     log("  Output Path : 10-文献笔记/{{citekey}}.md")
     log("  Template    : 90-模板/literature-note.md")
     return 0
+
+
+# --------------------------------------------------------------------------
+# install: 一键安装
+# --------------------------------------------------------------------------
+
+# Obsidian 官方插件注册表. 插件仓库会搬家 (Zotero Integration 已经搬过两次),
+# 所以每次都从这里查 id -> repo, 不写死地址.
+PLUGIN_REGISTRY = (
+    "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/"
+    "master/community-plugins.json"
+)
+ZI_ID = "obsidian-zotero-desktop-connector"
+PLUGINS = ("dataview", ZI_ID)
+PLUGIN_ASSETS = [("main.js", True), ("manifest.json", True), ("styles.css", False)]
+
+# 插件会为每个导入格式注册一条同名命令, 所以这个名字就是命令面板里搜的词.
+ZI_FORMAT_NAME = "导入文献笔记"
+
+BBT_ID = "better-bibtex@iris-advies.com"
+BBT_RELEASE_API = (
+    "https://api.github.com/repos/retorquere/zotero-better-bibtex/releases/latest"
+)
+# Zotero 开着且 Better BibTeX 加载完时返回 ready (BBT 源码 content/cayw.ts).
+BBT_PROBE = "http://127.0.0.1:23119/better-bibtex/cayw?probe=true"
+
+PY = "py" if sys.platform == "win32" else "python3"
+
+SEEDS_TEMPLATE = """# 种子论文清单 —— 一行一篇, 井号开头是注释
+#
+# 支持四种写法, 混着写也行:
+#   DOI        10.1038/nature14539
+#   arXiv 号   1706.03762
+#   OpenAlex   W2741809807
+#   标题       Attention Is All You Need
+#
+# 建议放 3-6 篇: 太少关联信号弱, 太多主题发散.
+# 把你要读的论文写在下面, 去掉行首的井号:
+
+# 1706.03762
+"""
+
+
+def http_get(url: str, timeout: int = 30) -> bytes | None:
+    """GET 返回内容; 404 返回 None; 其它错误抛出, 由调用方决定怎么报."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def _appdata() -> Path:
+    return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+
+
+def obsidian_config_dir() -> Path:
+    if sys.platform == "win32":
+        return _appdata() / "obsidian"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "obsidian"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "obsidian"
+
+
+def zotero_profile_dirs() -> list[Path]:
+    if sys.platform == "win32":
+        base = _appdata() / "Zotero" / "Zotero" / "Profiles"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "Zotero" / "Profiles"
+    else:
+        base = Path.home() / ".zotero" / "zotero"
+    if not base.is_dir():
+        return []
+    return [p for p in base.iterdir() if p.is_dir()]
+
+
+def downloads_dir() -> Path:
+    d = Path.home() / "Downloads"
+    return d if d.is_dir() else Path.cwd()
+
+
+def obsidian_running() -> bool:
+    """尽力判断 Obsidian 是否开着. 判断不了就当没开, 不挡路."""
+    import subprocess
+
+    try:
+        if sys.platform == "win32":
+            # 中文 Windows 的 tasklist 输出 GBK; 开了 UTF-8 模式的 Python 严格解码会抛错,
+            # 一抛错就会误判成"没开". 只需要匹配 ASCII 的进程名, 解不了的字节替换掉即可.
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Obsidian.exe", "/NH"],
+                capture_output=True, text=True, errors="replace", timeout=10,
+            ).stdout
+            return "obsidian.exe" in (out or "").lower()
+        name = "Obsidian" if sys.platform == "darwin" else "obsidian"
+        return subprocess.run(
+            ["pgrep", "-x", name], capture_output=True, timeout=10
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def bbt_live() -> bool:
+    """Zotero 开着且 Better BibTeX 已加载. 绕开系统代理, 否则本机地址可能被代理吃掉."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(BBT_PROBE, timeout=3) as resp:
+            return resp.read().strip() == b"ready"
+    except Exception:
+        return False
+
+
+def find_vaults(cfg_dir: Path) -> list[Path]:
+    """从 Obsidian 自己的库列表里读出所有还存在的库, 最近用过的排前面."""
+    try:
+        data = json.loads((cfg_dir / "obsidian.json").read_text(encoding="utf-8"))
+        entries = list((data.get("vaults") or {}).values())
+    except (OSError, ValueError, AttributeError):
+        return []
+    entries = [e for e in entries if isinstance(e, dict) and e.get("path")]
+    entries.sort(key=lambda e: -(e.get("ts") or 0))
+    out: list[Path] = []
+    for e in entries:
+        p = Path(e["path"])
+        if p.is_dir() and p not in out:
+            out.append(p)
+    return out
+
+
+def choose_vault(vaults: list[Path], ask=None) -> Path | None:
+    ask = ask or input
+    if len(vaults) == 1:
+        log(f"✓ 找到 Obsidian 库: {vaults[0]}")
+        return vaults[0]
+    if vaults:
+        log("找到多个 Obsidian 库:")
+        for i, v in enumerate(vaults, 1):
+            log(f"  {i}. {v}")
+        while True:
+            ans = ask("装到哪一个? 输入编号 (直接回车放弃): ").strip()
+            if not ans:
+                return None
+            if ans.isdigit() and 1 <= int(ans) <= len(vaults):
+                return vaults[int(ans) - 1]
+            log(f"  请输入 1 到 {len(vaults)} 之间的数字")
+    log("没自动找到 Obsidian 库.")
+    log("  在 Obsidian 里右键任意笔记 → 在系统资源管理器中显示, 复制地址栏里的路径.")
+    while True:
+        ans = ask("粘贴库的路径 (直接回车放弃): ").strip().strip('"').strip("'")
+        if not ans:
+            return None
+        p = Path(ans).expanduser()
+        if p.is_dir():
+            return p
+        log(f"  × 这个目录不存在: {p}")
+
+
+def load_plugin_registry(get=None) -> dict[str, str]:
+    get = get or http_get
+    body = get(PLUGIN_REGISTRY)
+    if not body:
+        raise RuntimeError("拿不到 Obsidian 插件注册表")
+    return {p["id"]: p["repo"] for p in json.loads(body.decode("utf-8"))}
+
+
+def _plugin_version(repo: str, plugin_id: str, get) -> str | None:
+    """读仓库默认分支的 manifest.json 拿版本号, 这也是 Obsidian 自己装插件的方式.
+
+    "最新发布" 不一定是它: 预发布版或者漏标 latest 的发布都会让 latest 链接指错.
+    读不到就返回 None, 由调用方退回 latest.
+    """
+    try:
+        body = get(f"https://raw.githubusercontent.com/{repo}/HEAD/manifest.json")
+    except Exception:
+        return None
+    if not body:
+        return None
+    try:
+        manifest = json.loads(body.decode("utf-8"))
+    except ValueError:
+        return None
+    if manifest.get("id") != plugin_id:
+        raise RuntimeError(
+            f"{repo} 的 manifest 写的是 {manifest.get('id')!r}, 不是 {plugin_id}, 拒绝安装"
+        )
+    return manifest.get("version") or None
+
+
+def install_plugin(vault: Path, plugin_id: str, registry: dict[str, str], get=None) -> None:
+    get = get or http_get
+    repo = registry.get(plugin_id)
+    if not repo:
+        raise RuntimeError(f"Obsidian 插件注册表里没有 {plugin_id}")
+
+    version = _plugin_version(repo, plugin_id, get)
+    bases = [f"https://github.com/{repo}/releases/latest/download"]
+    if version:
+        bases.insert(0, f"https://github.com/{repo}/releases/download/{version}")
+
+    files: dict[str, bytes] = {}
+    for base in bases:
+        files = {}
+        complete = True
+        for name, required in PLUGIN_ASSETS:
+            body = get(f"{base}/{name}")
+            if body is None:
+                if required:
+                    complete = False
+                    break
+                continue
+            files[name] = body
+        if complete:
+            break
+    else:
+        raise RuntimeError(f"{plugin_id} 的发布里缺 main.js 或 manifest.json")
+    # 全部下完再落盘: 下到一半断网, 不会留下一个装了一半、Obsidian 加载时报错的插件.
+    folder = vault / ".obsidian" / "plugins" / plugin_id
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (folder / name).write_bytes(body)
+
+
+def plugin_installed(vault: Path, plugin_id: str) -> bool:
+    return (vault / ".obsidian" / "plugins" / plugin_id / "manifest.json").exists()
+
+
+def enabled_plugins(vault: Path) -> list[str]:
+    f = vault / ".obsidian" / "community-plugins.json"
+    try:
+        loaded = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [x for x in loaded if isinstance(x, str)] if isinstance(loaded, list) else []
+
+
+def enable_plugins(vault: Path, ids: Iterable[str]) -> None:
+    """合并进启用列表: 保留你原有的插件和顺序, 不重复添加."""
+    current = enabled_plugins(vault)
+    for i in ids:
+        if i not in current:
+            current.append(i)
+    f = vault / ".obsidian" / "community-plugins.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(current, indent=2), encoding="utf-8")
+
+
+def zi_export_format() -> dict:
+    # 字段名来自插件 src/types.ts 的 ExportFormat.
+    return {
+        "name": ZI_FORMAT_NAME,
+        "outputPathTemplate": "10-文献笔记/{{citekey}}.md",
+        "imageOutputPathTemplate": "10-文献笔记/附件/{{citekey}}/",
+        "imageBaseNameTemplate": "image",
+        "templatePath": "90-模板/literature-note.md",
+    }
+
+
+def configure_zotero_integration(vault: Path) -> bool:
+    """往插件配置里加我们的导入格式. 插件加载时会把 data.json 和默认值合并,
+    所以只写 exportFormats 是安全的; 你原有的设置和格式一律保留."""
+    f = vault / ".obsidian" / "plugins" / ZI_ID / "data.json"
+    cfg: dict = {}
+    if f.exists():
+        try:
+            cfg = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            log(f"! {f} 不是合法 JSON, 没动它. 请在插件设置里手动加导入格式.")
+            return False
+        if not isinstance(cfg, dict):
+            return False
+    formats = cfg.get("exportFormats")
+    if not isinstance(formats, list):
+        formats = []
+    if not any(isinstance(x, dict) and x.get("name") == ZI_FORMAT_NAME for x in formats):
+        formats.append(zi_export_format())
+    cfg["exportFormats"] = formats
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def bbt_installed(profiles: Iterable[Path]) -> bool:
+    for p in profiles:
+        ext = p / "extensions"
+        if (ext / f"{BBT_ID}.xpi").exists() or (ext / BBT_ID).is_dir():
+            return True
+    return False
+
+
+def download_bbt(dest_dir: Path, get=None) -> Path:
+    get = get or http_get
+    body = get(BBT_RELEASE_API)
+    if not body:
+        raise RuntimeError("拿不到 Better BibTeX 的发布信息")
+    assets = json.loads(body.decode("utf-8")).get("assets") or []
+    # 发布里同时挂着 .xpi 和 .xpi.sha256, 要的是前者.
+    xpi = next((a for a in assets if str(a.get("name", "")).endswith(".xpi")), None)
+    if not xpi:
+        raise RuntimeError("Better BibTeX 最新发布里没有 .xpi")
+    data = get(xpi["browser_download_url"], timeout=120)
+    if not data:
+        raise RuntimeError("Better BibTeX 下载失败")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / xpi["name"]
+    dest.write_bytes(data)
+    return dest
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    todo: list[str] = []
+    log("paperkit 一键安装")
+    log("")
+
+    if args.vault:
+        vault = Path(args.vault).expanduser()
+        if not vault.is_dir():
+            log(f"× 库目录不存在: {vault}")
+            return 1
+    else:
+        vault = choose_vault(find_vaults(obsidian_config_dir()))
+        if vault is None:
+            log("× 没有可用的库. 先在 Obsidian 里新建一个库, 再跑一次.")
+            return 1
+
+    # 目录和模板是纯本地操作, 放在最前面, 后面联网的步骤失败也不影响它.
+    cmd_setup(argparse.Namespace(vault=str(vault), force=False, quiet=True))
+
+    if not args.skip_plugins:
+        # Obsidian 开着时改插件列表没用: 它退出时会拿内存里的旧列表覆盖回去.
+        if obsidian_running():
+            input("! Obsidian 正开着. 请先彻底关掉它, 然后回到这里按回车 …")
+        if obsidian_running():
+            failures.append("Obsidian 还开着, 跳过了插件安装. 关掉 Obsidian 后再跑一次本命令.")
+        else:
+            try:
+                registry = load_plugin_registry()
+            except Exception as exc:
+                registry = None
+                failures.append(f"下载 Obsidian 插件列表失败: {exc}")
+            if registry is not None:
+                ready = []
+                for pid in PLUGINS:
+                    if plugin_installed(vault, pid):
+                        log(f"✓ 插件已存在, 不重装: {pid}")
+                        ready.append(pid)
+                        continue
+                    try:
+                        install_plugin(vault, pid, registry)
+                        log(f"✓ 装好插件: {pid}")
+                        ready.append(pid)
+                    except Exception as exc:
+                        failures.append(f"插件 {pid} 安装失败: {exc}")
+                if ready:
+                    enable_plugins(vault, ready)
+                    log("✓ 已加入启用列表")
+            if plugin_installed(vault, ZI_ID) and configure_zotero_integration(vault):
+                log(f"✓ Zotero Integration 已配好导入格式「{ZI_FORMAT_NAME}」")
+            todo.append(
+                "打开 Obsidian → 设置 → 第三方插件. 如果看到「安全模式」或「开启社区插件」, "
+                "点开启; 本来就开着就不用管"
+            )
+
+    if not args.skip_zotero:
+        profiles = zotero_profile_dirs()
+        if bbt_live() or bbt_installed(profiles):
+            log("✓ Better BibTeX 已安装")
+        else:
+            if not profiles:
+                todo.append("先装 Zotero 7: https://www.zotero.org/download/")
+            try:
+                xpi = download_bbt(downloads_dir())
+                log(f"✓ 已下载 Better BibTeX: {xpi}")
+                todo.append(
+                    "Zotero → 工具 → 插件 → 右上角齿轮 → 从文件安装插件 → "
+                    f"选 {xpi} → 重启 Zotero"
+                )
+            except Exception as exc:
+                failures.append(f"下载 Better BibTeX 失败: {exc}")
+                todo.append(
+                    "手动下载 Better BibTeX: https://github.com/retorquere/"
+                    "zotero-better-bibtex/releases/latest (选 .xpi), "
+                    "再在 Zotero → 工具 → 插件 → 齿轮 → 从文件安装插件"
+                )
+
+    seeds = Path.cwd() / "seeds.txt"
+    if not seeds.exists():
+        seeds.write_text(SEEDS_TEMPLATE, encoding="utf-8")
+        log(f"✓ 建好种子清单: {seeds}")
+
+    log("")
+    if failures:
+        log("没做成的:")
+        for f in failures:
+            log(f"  × {f}")
+        log("")
+    if todo:
+        log("还需要你手动做的:")
+        for i, t in enumerate(todo, 1):
+            log(f"  {i}. {t}")
+        log("")
+    log("都做完后, 开着 Zotero 跑体检:")
+    log(f'  {PY} paperkit.py doctor --vault "{vault}"')
+    log("")
+    log("然后编辑 seeds.txt 写上你要读的论文, 再跑:")
+    log(f'  {PY} paperkit.py discover --seeds seeds.txt --out papers --vault "{vault}"')
+    return 1 if failures else 0
 
 
 # --------------------------------------------------------------------------
@@ -775,6 +1196,9 @@ def cmd_discover(args: argparse.Namespace) -> int:
         log("! 没给 --mailto, 按 1 请求/秒 跑. 填个邮箱能进 OpenAlex 礼貌池, 快 10 倍.")
 
     lines = read_seeds(seeds_path)
+    if not lines:
+        log(f"× {seeds_path.name} 里还没写论文. 用记事本打开它, 一行写一篇, 去掉行首的井号.")
+        return 1
     log(f"→ 解析 {len(lines)} 条种子 …")
     seeds: list[Paper] = []
     for ln in lines:
@@ -917,22 +1341,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "缺 90-模板/literature-note.md",
     )
 
-    plugins = vault / ".obsidian" / "plugins"
-    for pid, label in [
-        ("obsidian-zotero-desktop-connector", "Zotero Integration"),
-        ("dataview", "Dataview"),
-    ]:
+    enabled = set(enabled_plugins(vault))
+    for pid, label in [(ZI_ID, "Zotero Integration"), ("dataview", "Dataview")]:
+        installed = plugin_installed(vault, pid)
         check(
-            (plugins / pid).is_dir(),
+            installed,
             f"插件已安装: {label}",
-            f"插件没装: {label} — Obsidian → 设置 → 社区插件 里搜",
+            f"插件没装: {label} — 关掉 Obsidian 后跑 {PY} paperkit.py install",
         )
+        if installed:
+            check(
+                pid in enabled,
+                f"插件已启用: {label}",
+                f"插件装了但没启用: {label} — Obsidian → 设置 → 第三方插件 里打开",
+            )
 
-    bibs = list(vault.rglob("*.bib"))
+    # 不查 .bib: Zotero Integration 直接调 Better BibTeX 的本地接口, 从来不读 .bib.
     check(
-        bool(bibs),
-        f"找到 Better BibTeX 导出: {bibs[0].name}" if bibs else "",
-        "库里没有 .bib — Zotero 里设置 Better BibTeX 自动导出到库目录",
+        bbt_live(),
+        "Zotero 在运行, Better BibTeX 已连上",
+        "连不上 Better BibTeX — 先打开 Zotero; 开着还不行就是 Better BibTeX 没装",
     )
 
     log("")
@@ -966,7 +1394,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--force", action="store_true", help="覆盖已存在的笔记")
     d.set_defaults(func=cmd_discover)
 
-    k = sub.add_parser("doctor", help="体检: 检查插件/模板/自动导出是否到位")
+    i = sub.add_parser("install", help="一键安装: 自动找库, 铺结构, 装插件, 配 Zotero")
+    i.add_argument("--vault", help="不自动找, 直接指定 Obsidian 库路径")
+    i.add_argument("--skip-plugins", action="store_true", help="不装 Obsidian 插件")
+    i.add_argument("--skip-zotero", action="store_true", help="不管 Zotero 那边")
+    i.set_defaults(func=cmd_install)
+
+    k = sub.add_parser("doctor", help="体检: 检查插件/模板/Zotero 连接是否到位")
     k.add_argument("--vault", required=True)
     k.set_defaults(func=cmd_doctor)
 
