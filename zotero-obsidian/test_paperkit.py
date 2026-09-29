@@ -850,3 +850,93 @@ class TestObsidianRunningOnChineseWindows(unittest.TestCase):
         with mock.patch.object(pk.sys, "platform", "win32"), \
              mock.patch.object(subprocess, "run", fake_run):
             self.assertTrue(pk.obsidian_running())
+
+
+class TestVaultDiscoveryFallback(unittest.TestCase):
+    """obsidian.json 读不到时, 直接在硬盘上找带 .obsidian 的目录."""
+
+    def make_vault(self, path):
+        (path / ".obsidian").mkdir(parents=True)
+        return path
+
+    def test_scan_finds_vaults_by_their_dot_obsidian_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            a = self.make_vault(home / "Documents" / "Research")
+            b = self.make_vault(home / "OneDrive" / "文档" / "读书笔记")
+            (home / "Documents" / "不是库").mkdir()
+            self.assertEqual(sorted(pk.scan_for_vaults([home])), sorted([a, b]))
+
+    def test_scan_does_not_descend_into_a_vault_or_system_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            outer = self.make_vault(home / "Vault")
+            self.make_vault(outer / "附件" / "嵌套")          # 库里面的不算
+            self.make_vault(home / "AppData" / "Roaming" / "x")  # 系统目录跳过
+            self.make_vault(home / ".cache" / "y")               # 隐藏目录跳过
+            self.make_vault(home / "node_modules" / "z")
+            self.assertEqual(pk.scan_for_vaults([home]), [outer])
+
+    def test_scan_respects_depth_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.make_vault(home / "a" / "b" / "c" / "d" / "e" / "too-deep")
+            self.assertEqual(pk.scan_for_vaults([home], depth=3), [])
+
+    def test_scan_survives_unreadable_and_missing_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            v = self.make_vault(home / "V")
+            self.assertEqual(pk.scan_for_vaults([home / "不存在", home]), [v])
+
+    def test_scan_lists_each_vault_once_when_roots_overlap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            v = self.make_vault(home / "Documents" / "V")
+            self.assertEqual(pk.scan_for_vaults([home, home / "Documents"]), [v])
+
+    def test_missing_config_explains_why(self):
+        import io
+        from unittest import mock
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(pk.sys, "stderr", buf):
+            pk.find_vaults(Path(tmp))
+        self.assertIn("obsidian.json", buf.getvalue())
+
+    def test_config_pointing_at_deleted_folders_explains_why(self):
+        import io
+        from unittest import mock
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(pk.sys, "stderr", buf):
+            cfg = Path(tmp)
+            write_obsidian_json(cfg, [(cfg / "早就删了", 1)])
+            self.assertEqual(pk.find_vaults(cfg), [])
+        self.assertIn("早就删了", buf.getvalue())
+
+    def test_install_falls_back_to_disk_scan(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = self.make_vault(root / "home" / "Documents" / "Research")
+            (root / "prof" / "extensions").mkdir(parents=True)
+            (root / "work").mkdir()
+            with mock.patch.object(pk, "http_get", fake_web()), \
+                 mock.patch.object(pk, "obsidian_config_dir", lambda: root / "没有这个目录"), \
+                 mock.patch.object(pk, "vault_search_roots", lambda: [root / "home"]), \
+                 mock.patch.object(pk, "zotero_profile_dirs", lambda: [root / "prof"]), \
+                 mock.patch.object(pk, "downloads_dir", lambda: root / "dl"), \
+                 mock.patch.object(pk, "obsidian_running", lambda: False), \
+                 mock.patch.object(pk, "bbt_live", lambda: False), \
+                 mock.patch("builtins.input", mock.Mock(side_effect=AssertionError("不该问"))), \
+                 mock.patch.object(pk.Path, "cwd", lambda: root / "work"):
+                rc = pk.main(["install"])
+            self.assertEqual(rc, 0)
+            self.assertTrue((vault / "90-模板" / "literature-note.md").exists())
+
+    def test_search_roots_include_other_drives_on_windows(self):
+        from unittest import mock
+        with mock.patch.object(pk.sys, "platform", "win32"), \
+             mock.patch.object(pk, "_windows_drives", lambda: [Path("C:/"), Path("D:/")]):
+            roots = pk.vault_search_roots()
+        self.assertIn(Path("D:/"), roots)
+        self.assertNotIn(Path("C:/"), roots)   # C 盘根太大, 只搜用户目录

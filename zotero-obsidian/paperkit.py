@@ -872,20 +872,125 @@ def bbt_live() -> bool:
 
 
 def find_vaults(cfg_dir: Path) -> list[Path]:
-    """从 Obsidian 自己的库列表里读出所有还存在的库, 最近用过的排前面."""
+    """从 Obsidian 自己的仓库列表里读出所有还存在的仓库, 最近用过的排前面.
+
+    找不到时说清楚是哪一环断了, 不然用户和我都只能猜.
+    """
+    f = cfg_dir / "obsidian.json"
+    if not f.exists():
+        log(f"· Obsidian 的仓库列表不存在: {f}")
+        return []
     try:
-        data = json.loads((cfg_dir / "obsidian.json").read_text(encoding="utf-8"))
+        data = json.loads(f.read_text(encoding="utf-8-sig"))
         entries = list((data.get("vaults") or {}).values())
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError) as exc:
+        log(f"· 读不懂 Obsidian 的仓库列表 {f}: {exc}")
         return []
     entries = [e for e in entries if isinstance(e, dict) and e.get("path")]
+    if not entries:
+        log(f"· Obsidian 的仓库列表是空的: {f}")
+        return []
     entries.sort(key=lambda e: -(e.get("ts") or 0))
     out: list[Path] = []
+    gone: list[str] = []
     for e in entries:
         p = Path(e["path"])
-        if p.is_dir() and p not in out:
-            out.append(p)
+        if p.is_dir():
+            if p not in out:
+                out.append(p)
+        else:
+            gone.append(str(p))
+    if not out:
+        log(f"· 列表里的仓库都已经不在了: {'; '.join(gone)}")
     return out
+
+
+# 扫盘时跳过的目录: 系统目录、依赖目录, 以及大到扫不完又不可能放笔记的地方.
+SKIP_DIRS = {
+    "appdata", "node_modules", "windows", "program files", "program files (x86)",
+    "programdata", "library", "system volume information", "__pycache__",
+    "site-packages", "anaconda3", "miniconda3", "go", "sdk",
+}
+
+
+def _windows_drives() -> list[Path]:
+    lister = getattr(os, "listdrives", None)   # Python 3.12+
+    if lister:
+        try:
+            return [Path(d) for d in lister()]
+        except OSError:
+            pass
+    # 跳过 A: B: (软驱位, 查询空驱动器可能弹窗)
+    return [Path(f"{c}:/") for c in "CDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.isdir(f"{c}:/")]
+
+
+def vault_search_roots() -> list[Path]:
+    """扫盘的起点: 用户目录, 加上 Windows 上除系统盘外的其它盘 (很多人把资料放 D 盘)."""
+    roots = [Path.home()]
+    if sys.platform == "win32":
+        system = (os.environ.get("SystemDrive") or "C:")[:1].upper()
+        for d in _windows_drives():
+            if str(d)[:1].upper() != system:
+                roots.append(d)
+    return roots
+
+
+def scan_for_vaults(roots: Iterable[Path], depth: int = 4, limit: int = 40000) -> list[Path]:
+    """找带 .obsidian 子目录的文件夹, 这就是 Obsidian 仓库的标志.
+
+    不进仓库内部、不进隐藏和系统目录、限深限量, 一个大硬盘也不会扫到天荒地老.
+    最近用过的 (.obsidian 最近被改过的) 排前面.
+    """
+    found: list[Path] = []
+    seen: set[str] = set()
+    visited = 0
+    for root in roots:
+        stack = [(Path(root), 0)]
+        while stack:
+            d, lvl = stack.pop()
+            try:
+                key = os.path.normcase(str(d.resolve()))
+            except (OSError, RuntimeError):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            visited += 1
+            if visited > limit:
+                return _by_recency(found)
+            try:
+                with os.scandir(d) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            if any(e.name == ".obsidian" and _is_dir(e) for e in entries):
+                found.append(d)
+                continue
+            if lvl >= depth:
+                continue
+            for e in entries:
+                name = e.name
+                if name.startswith((".", "$")) or name.lower() in SKIP_DIRS:
+                    continue
+                if _is_dir(e, follow=False):
+                    stack.append((Path(e.path), lvl + 1))
+    return _by_recency(found)
+
+
+def _is_dir(entry: os.DirEntry, follow: bool = True) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=follow)
+    except OSError:
+        return False
+
+
+def _by_recency(vaults: list[Path]) -> list[Path]:
+    def mtime(v: Path) -> float:
+        try:
+            return (v / ".obsidian").stat().st_mtime
+        except OSError:
+            return 0.0
+    return sorted(vaults, key=mtime, reverse=True)
 
 
 def choose_vault(vaults: list[Path], ask=None) -> Path | None:
@@ -904,8 +1009,10 @@ def choose_vault(vaults: list[Path], ask=None) -> Path | None:
             if ans.isdigit() and 1 <= int(ans) <= len(vaults):
                 return vaults[int(ans) - 1]
             log(f"  请输入 1 到 {len(vaults)} 之间的数字")
-    log("没自动找到 Obsidian 库.")
-    log("  在 Obsidian 里右键任意笔记 → 在系统资源管理器中显示, 复制地址栏里的路径.")
+    log("")
+    log("没找到任何 Obsidian 仓库.")
+    log("  · 从没建过仓库: 直接回车退出, 打开 Obsidian 新建一个仓库, 关掉 Obsidian 再跑一次")
+    log("  · 建过: Obsidian 左下角点仓库名 → 管理仓库 (Manage vaults), 复制路径粘贴到这里")
     while True:
         ans = ask("粘贴库的路径 (直接回车放弃): ").strip().strip('"').strip("'")
         if not ans:
@@ -1079,7 +1186,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             log(f"× 库目录不存在: {vault}")
             return 1
     else:
-        vault = choose_vault(find_vaults(obsidian_config_dir()))
+        vaults = find_vaults(obsidian_config_dir())
+        if not vaults:
+            log("→ 直接在硬盘上找带 .obsidian 文件夹的目录 …")
+            vaults = scan_for_vaults(vault_search_roots())
+        vault = choose_vault(vaults)
         if vault is None:
             log("× 没有可用的库. 先在 Obsidian 里新建一个库, 再跑一次.")
             return 1
