@@ -1538,3 +1538,209 @@ class TestRerunNoteMessage(unittest.TestCase):
         line = next(l for l in buf.getvalue().splitlines() if "文献笔记" in l)
         self.assertNotIn("写入 0 篇", line)
         self.assertIn("已存在", line)
+
+
+# --------------------------------------------------------------------------
+# 用户第一份真实推荐列表暴露出来的排序问题
+# --------------------------------------------------------------------------
+
+# 用户 7 篇种子的标题 (主题地图里显示的样子)
+REAL_SEED_TITLES = [
+    "The Impact of Consumers’ Attitudes toward a Theme Park: A Focus on Dis",
+    "Study on Tourism Consumer Behavior and Countermeasures Based on Big Da",
+    "Exploring the Relationship Between Hedonism, Tourist Experience, and R",
+    "Exploring the Drivers of Visitor Loyalty in the Context of Outdoor Adv",
+    "What keeps historical theme park visitors coming? Research based on ex",
+    "中小型主题公园的服务质量与品牌资产、游客满意度、目的地形象间的影响关系研究",
+    "A Study on the Factors Influencing Theme Park Visitors' Revisit Intent",
+]
+
+# 真实结果里的统计方法文献, 必须归进 M-研究方法
+REAL_METHOD_TITLES = [
+    "Assessing measurement model quality in PLS-SEM using confirmatory composite analysis",
+    "Predictive model assessment in PLS-SEM: guidelines for using PLSpredict",
+    "Principles and Practice of Structural Equation Modeling",
+    "Comparative fit indexes in structural models",
+    "An assessment of the use of partial least squares structural equation modeling in marketing research",
+    "Structural model robustness checks in PLS-SEM",
+    "Partial Least Squares Structural Equation Modeling",
+    "Multivariate Data Analysis",
+    "Structural Equation Models with Unobservable Variables and Measurement Error: Algebra and Statistics",
+    "An Index of Factorial Simplicity",
+    "Marketing Research: An Applied Orientation",
+    "Identifying and treating unobserved heterogeneity with FIMIX-PLS",
+    "Gain more insight from your PLS-SEM results: The importance-performance map analysis",
+    "The elephant in the room: Predictive performance of PLS models",
+]
+
+# 真实结果里的主题论文, 一篇都不能被误判成方法文献
+REAL_TOPICAL_TITLES = [
+    "Theme parks and a structural equation model of determinants of visitor satisfaction",
+    "How destination image and evaluative factors affect behavioral intentions?",
+    "Exploring the experiential and sociodemographic drivers of satisfaction and loyalty in the theme park context",
+    "The theme park experience: An analysis of pleasure, arousal and satisfaction",
+    "Servicescape elements, customer predispositions and service experience",
+    "Experiential Marketing",
+    "Determining the Factors Affecting the Memorable Nature of Travel Experiences",
+    "The development of measurement scale for entertainment tourism experience",
+    "Development of a Scale to Measure Memorable Tourism Experiences",
+    "Work and/or Fun: Measuring Hedonic and Utilitarian Shopping Value",
+    "Customer Satisfaction, Market Share, and Profitability: Findings from Sweden",
+    "A Cognitive Model of the Antecedents and Consequences of Satisfaction Decisions",
+    "Antecedents of revisit intention",
+    "Tourists’ Experiences with Smart Tourism Technology at Smart Destinations",
+    "Observations: SAM: The Self-Assessment Manikin",
+    "Study on the Marketing Modes of Theme Parks in China",
+]
+
+
+class TestMethodPapersGetTheirOwnTier(unittest.TestCase):
+    def setUp(self):
+        self.vocab = pk.seed_vocabulary(REAL_SEED_TITLES)
+
+    def test_every_real_method_paper_is_classified_as_method(self):
+        for t in REAL_METHOD_TITLES:
+            self.assertTrue(pk.is_method_paper(t, self.vocab), t)
+
+    def test_no_real_topical_paper_is_misclassified(self):
+        for t in REAL_TOPICAL_TITLES:
+            self.assertFalse(pk.is_method_paper(t, self.vocab), t)
+
+    def test_generic_words_in_seed_titles_do_not_make_methods_topical(self):
+        # 种子标题里的 "Big Data" "Study" "Research" 是泛用词, 不能让
+        # "Multivariate Data Analysis" 因为共享 data 就被当成主题论文
+        for w in ("data", "study", "research", "based", "factor", "impact"):
+            self.assertNotIn(w, self.vocab)
+        for w in ("theme", "park", "visitor", "loyalty", "tourism"):
+            self.assertIn(w, self.vocab)
+
+    def test_chinese_method_title_with_seed_topic_stays_topical(self):
+        self.assertFalse(pk.is_method_paper("主题公园游客满意度的结构方程模型研究", self.vocab))
+        self.assertTrue(pk.is_method_paper("结构方程模型的原理与应用", self.vocab))
+
+
+def scored(**kw):
+    p = pk.Paper.from_json(work(kw.pop("oid", "W9"), kw.pop("title", "Topic paper words"),
+                                kw.pop("year", 2015), kw.pop("cited", 10),
+                                refs=kw.pop("refs", ())))
+    p.prov = kw.pop("prov", {})
+    p.seed_links = set(kw.pop("links", ()))
+    p.cite_links = set(kw.pop("cite_links", ()))
+    return p
+
+
+class TestScoringFixesFromRealList(unittest.TestCase):
+    def seeds(self):
+        s1 = pk.Paper.from_json(work("S1", "Seed", 2020, 1, refs=[f"R{i}" for i in range(20)]))
+        s2 = pk.Paper.from_json(work("S2", "Seed", 2021, 1, refs=[f"R{i}" for i in range(10, 30)]))
+        return [s1, s2]
+
+    def test_related_only_links_do_not_earn_the_multi_seed_bonus(self):
+        # 被引 0 次的中文会议论文只是 OpenAlex 的"近邻", 却吃到了"同时关联 3 篇种子"的加分
+        near = scored(oid="W1", cited=0, year=2009, prov={"rel": 3}, links={"S1", "S2", "S3"})
+        cited = scored(oid="W2", cited=40, year=2012, prov={"back": 1}, links={"S1"},
+                       cite_links={"S1"}, refs=["R1", "R2", "R3"])
+        pk.score_all({"W1": near, "W2": cited}, self.seeds(), this_year=2026)
+        self.assertGreater(cited.score, near.score)
+        self.assertFalse(any("同时关联" in r for r in near.reasons))
+
+    def test_fame_cannot_outweigh_topical_relevance(self):
+        # Bentler 1990 (被引 24156) 只被 1 篇种子引用, 不能压过同样被 1 篇引用、
+        # 且和种子共享大量参考文献的主题论文
+        famous = scored(oid="W1", cited=24156, year=1990, prov={"back": 1},
+                        links={"S1"}, cite_links={"S1"})
+        topical = scored(oid="W2", cited=462, year=2013, prov={"back": 1}, links={"S1"},
+                         cite_links={"S1"}, refs=[f"R{i}" for i in range(12)] + ["X1", "X2"])
+        pk.score_all({"W1": famous, "W2": topical}, self.seeds(), this_year=2026)
+        self.assertGreater(topical.score, famous.score)
+
+    def test_multi_seed_citation_bonus_still_applies(self):
+        both = scored(oid="W1", prov={"back": 2}, links={"S1", "S2"}, cite_links={"S1", "S2"})
+        one = scored(oid="W2", prov={"back": 1}, links={"S1"}, cite_links={"S1"})
+        pk.score_all({"W1": both, "W2": one}, self.seeds(), this_year=2026)
+        self.assertGreater(both.score, one.score)
+        self.assertTrue(any("同时关联 2 篇种子" in r for r in both.reasons))
+
+
+class TestDiscoverWithMethodTier(unittest.TestCase):
+    def setUp(self):
+        CORPUS["W500"] = work("W500", "Partial Least Squares Structural Equation Modeling",
+                              2017, 3000, refs=["W900"])
+        CORPUS["W1"]["referenced_works"].append("https://openalex.org/W500")
+
+    def tearDown(self):
+        CORPUS.pop("W500")
+        CORPUS["W1"]["referenced_works"].remove("https://openalex.org/W500")
+
+    def run_discover(self, root, vault=None, extra=()):
+        from unittest import mock
+        seeds = root / "s.txt"
+        seeds.write_text("10.1000/seed1\n10.1000/seed2\n", encoding="utf-8")
+        argv = ["discover", "--seeds", str(seeds), "--out", str(root / "o"), *extra]
+        if vault:
+            argv += ["--vault", str(vault)]
+        with mock.patch.object(pk, "Client", lambda **kw: FakeClient()):
+            return pk.main(argv)
+
+    def test_method_paper_lands_in_M_and_not_in_topical_tiers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_discover(root, extra=["--no-pdf"])
+            result = json.loads((root / "o" / "paperkit-result.json").read_text(encoding="utf-8"))
+            tiers = {r["oid"]: r["tier"] for r in result}
+            self.assertEqual(tiers["W500"], "M")
+            self.assertIn("Partial Least Squares",
+                          (root / "o" / "M-研究方法.ris").read_text(encoding="utf-8"))
+            for name in ("S-核心必读", "A-强相关", "B-背景扩展"):
+                f = root / "o" / f"{name}.ris"
+                if f.exists():
+                    self.assertNotIn("Partial Least Squares", f.read_text(encoding="utf-8"))
+
+    def test_method_papers_do_not_consume_topical_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.run_discover(root, extra=["--no-pdf", "--max", "3", "--top-s", "1", "--top-a", "1"])
+            result = json.loads((root / "o" / "paperkit-result.json").read_text(encoding="utf-8"))
+            topical = [r for r in result if not r["seed"] and r["tier"] in "SAB"]
+            self.assertEqual(len(topical), 3)
+            self.assertTrue(any(r["tier"] == "M" for r in result))
+
+    def test_rerun_moves_notes_to_their_new_tier_and_keeps_user_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "v"; vault.mkdir()
+            self.run_discover(root, vault=vault, extra=["--no-pdf"])
+            notes = vault / "10-文献笔记"
+            note = next(notes.rglob("Hopper*")) if list(notes.rglob("Hopper*")) else None
+            # 找 W500 的笔记, 模拟"上次它在 A 级、用户还写了东西"
+            m_note = next(p for p in notes.rglob("*.md") if "Partial Least Squares" in p.read_text(encoding="utf-8"))
+            text = m_note.read_text(encoding="utf-8").replace("tier: M", "tier: A")
+            text += "\n我读的时候写的笔记\n"
+            old_home = notes / "A-强相关" / m_note.name
+            old_home.parent.mkdir(parents=True, exist_ok=True)
+            old_home.write_text(text, encoding="utf-8")
+            m_note.unlink()
+
+            self.run_discover(root, vault=vault, extra=["--no-pdf"])
+            self.assertFalse(old_home.exists())
+            moved = notes / "M-研究方法" / m_note.name
+            body = moved.read_text(encoding="utf-8")
+            self.assertIn("我读的时候写的笔记", body)
+            self.assertIn("tier: M", body)
+            self.assertNotIn("tier: A", body)
+
+    def test_rerun_moves_downloaded_pdf_instead_of_downloading_again(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            CORPUS["W500"]["best_oa_location"] = {"is_oa": True, "pdf_url": "https://x/pls.pdf", "source": {}}
+            slug = pk.Paper.from_json(CORPUS["W500"]).slug()
+            stale = root / "o" / "A-强相关" / f"{slug}.pdf"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"%PDF-1.4 old download")
+            calls = []
+            with mock.patch.object(pk, "download_pdf", lambda *a, **k: calls.append(a) or False):
+                self.run_discover(root)
+            self.assertFalse(stale.exists())
+            self.assertEqual((root / "o" / "M-研究方法" / f"{slug}.pdf").read_bytes(), b"%PDF-1.4 old download")
+            self.assertFalse([c for c in calls if "pls.pdf" in c[0]])

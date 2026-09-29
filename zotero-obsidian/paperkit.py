@@ -44,6 +44,9 @@ TIERS = [
     ("S", "S-核心必读"),
     ("A", "A-强相关"),
     ("B", "B-背景扩展"),
+    # 结构方程、PLS 这类统计方法文献: 写方法论那章要引, 但不是主题论文,
+    # 不能拿名气去挤主题论文的名额.
+    ("M", "M-研究方法"),
 ]
 TIER_DIRS = dict(TIERS)
 
@@ -202,6 +205,9 @@ class Paper:
     reasons: list[str] = field(default_factory=list)
     seed_links: set[str] = field(default_factory=set)
     prov: dict[str, int] = field(default_factory=dict)
+    # 只算引用关系 (被种子引用 / 引用了种子). OpenAlex 的"近邻"不算,
+    # 不然被引 0 次的会议论文也能吃到"同时关联多篇种子"的加分.
+    cite_links: set[str] = field(default_factory=set)
     is_seed: bool = False
     pdf_path: str | None = None
 
@@ -419,6 +425,8 @@ def expand(client: Client, seeds: list[Paper], per_seed_citers: int) -> dict[str
         for kind, seed_set in kinds.items():
             p.seed_links |= seed_set
             p.prov[kind] = len(seed_set)
+            if kind in ("back", "fwd"):
+                p.cite_links |= seed_set
     return candidates
 
 
@@ -428,10 +436,12 @@ def expand(client: Client, seeds: list[Paper], per_seed_citers: int) -> dict[str
 
 W_BACK = 3.0     # 被种子引用: 领域基石, 权重最高
 W_FWD = 2.5      # 引用了种子: 直接的后续工作
-W_REL = 1.5      # OpenAlex 近邻: 信号弱一些
+W_REL = 1.0      # OpenAlex 近邻: 按主题相似度算的, 只当排序的补充
+REL_MAX_SEEDS = 2
 W_COUPLE = 2.0   # 文献耦合: 和种子共享参考文献 = 同一个问题域
 W_BREADTH = 2.5  # 同时挂到多篇种子上, 这是最强的"这就是你要找的"信号
 W_IMPACT = 0.8   # 影响力, 年均被引取对数, 别让老论文单靠年头碾压
+IMPACT_CAP = 2.0  # 封顶: 被引两万次的方法论经典不能靠名气压过主题相关的论文
 
 
 def score_all(candidates: dict[str, Paper], seeds: list[Paper], this_year: int) -> None:
@@ -451,7 +461,7 @@ def score_all(candidates: dict[str, Paper], seeds: list[Paper], this_year: int) 
             s += W_FWD * prov["fwd"]
             why.append(f"引用了 {prov['fwd']} 篇种子")
         if prov.get("rel"):
-            s += W_REL * prov["rel"]
+            s += W_REL * min(prov["rel"], REL_MAX_SEEDS)
             why.append("OpenAlex 判定为近邻")
 
         # 文献耦合: 和种子重叠的参考文献数, 用自身参考文献量开方归一,
@@ -462,14 +472,14 @@ def score_all(candidates: dict[str, Paper], seeds: list[Paper], this_year: int) 
             s += W_COUPLE * couple
             why.append(f"与种子共享 {shared} 条参考文献")
 
-        breadth = len(p.seed_links)
+        breadth = len(p.cite_links)
         if breadth > 1:
             s += W_BREADTH * (breadth - 1)
             why.append(f"同时关联 {breadth} 篇种子")
 
         age = max(1, this_year - (p.year or this_year) + 1)
         per_year = p.cited_by / age
-        s += W_IMPACT * math.log1p(per_year)
+        s += min(W_IMPACT * math.log1p(per_year), IMPACT_CAP)
 
         # 近三年的新工作给一点补偿, 它们还没来得及攒引用.
         if p.year and this_year - p.year <= 3:
@@ -481,6 +491,61 @@ def score_all(candidates: dict[str, Paper], seeds: list[Paper], this_year: int) 
 
         p.score = round(s, 3)
         p.reasons = why
+
+
+METHOD_PATTERNS = [
+    r"structural equation", r"\bpls\b", r"partial least squares",
+    r"multivariate data analysis", r"\bfit ind(?:ex|exes|ices)\b", r"goodness[- ]of[- ]fit",
+    r"measurement (?:model|error|invariance)", r"common method (?:bias|variance)",
+    r"factor analysis", r"\bfactorial\b", r"cronbach", r"discriminant validity",
+    r"unobserved heterogeneity", r"marketing research", r"\bresearch methods?\b",
+    r"survey research", r"sample size", r"\bbootstrap", r"mediation analysis",
+    r"regression analysis", r"psychometric", r"robustness checks?",
+    r"结构方程", r"偏最小二乘", r"因子分析", r"信度", r"效度", r"研究方法",
+]
+
+# 种子标题里的泛用词: 不能因为共享 "data" "study" 就把方法文献当成主题论文.
+GENERIC_WORDS = {
+    "with", "from", "into", "toward", "towards", "study", "studie", "research", "based",
+    "base", "exploring", "explore", "relationship", "between", "factor", "influencing",
+    "influence", "impact", "effect", "role", "analysi", "analyse", "model", "modeling",
+    "modelling", "theory", "theorie", "context", "driver", "focu", "keep", "coming", "come",
+    "what", "which", "their", "using", "approach", "evidence", "case", "perspective", "data",
+    "review", "development", "determinant", "examining", "assessing", "assessment",
+    "empirical", "among", "within", "through", "toward", "more", "than", "this", "that",
+}
+CJK_GENERIC = {"研究", "影响", "关系", "分析", "基于", "模型", "方法", "理论", "因素", "作用", "视角", "对策"}
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def _topic_words(title: str) -> set[str]:
+    words = {_stem(w) for w in re.findall(r"[a-z]{4,}", (title or "").lower())} - GENERIC_WORDS
+    for run in re.findall(r"[\u4e00-\u9fff]+", title or ""):
+        for i in range(len(run) - 1):
+            bg = run[i:i + 2]
+            if not any(c in bg for c in "的与和及之") and bg not in CJK_GENERIC:
+                words.add(bg)
+    return words
+
+
+def seed_vocabulary(titles: Iterable[str]) -> set[str]:
+    """种子标题里的主题词. 方法文献的判断要看它和这些词有没有交集."""
+    vocab: set[str] = set()
+    for t in titles:
+        vocab |= _topic_words(t)
+    return vocab
+
+
+def is_method_paper(title: str, vocab: set[str]) -> bool:
+    """标题像统计方法文献, 并且和种子的主题词毫无交集.
+    "主题公园与游客满意度的结构方程模型" 这种仍然是主题论文."""
+    low = (title or "").lower()
+    if not any(re.search(p, low) for p in METHOD_PATTERNS):
+        return False
+    return not (_topic_words(title) & vocab)
 
 
 def assign_tiers(ranked: list[Paper], n_s: int, n_a: int) -> None:
@@ -620,6 +685,22 @@ tags: [论文, {tier_tag}]
 
 - 链接:
 """
+
+
+def retier_note(path: Path, p: Paper) -> None:
+    """只改分级相关的几行: frontmatter 的 tier/score/tags 和提示框里的"分级"."""
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end > 0:
+            head, rest = text[:end], text[end:]
+            head = re.sub(r"(?m)^tier: .*$", f"tier: {p.tier}", head)
+            head = re.sub(r"(?m)^score: .*$", f"score: {p.score}", head)
+            head = re.sub(r"(?m)^tags: \[论文, .*\]$",
+                          f"tags: [论文, {TIER_DIRS[p.tier].replace('-', '/')}]", head)
+            text = head + rest
+    text = re.sub(r"分级: \*\*[^*]+\*\*", f"分级: **{TIER_DIRS[p.tier]}**", text)
+    path.write_text(text, encoding="utf-8")
 
 
 def render_note(p: Paper, seed_titles: dict[str, str]) -> str:
@@ -1881,11 +1962,19 @@ def cmd_discover(args: argparse.Namespace) -> int:
     ranked = sorted(candidates.values(), key=lambda p: -p.score)
     if args.min_year:
         ranked = [p for p in ranked if (p.year or 0) >= args.min_year]
-    ranked = ranked[: args.max]
-    assign_tiers(ranked, args.top_s, args.top_a)
+    vocab = seed_vocabulary(s.title for s in seeds)
+    methods = [p for p in ranked if is_method_paper(p.title, vocab)]
+    method_ids = {p.oid for p in methods}
+    topical = [p for p in ranked if p.oid not in method_ids][: args.max]
+    assign_tiers(topical, args.top_s, args.top_a)
+    methods = methods[: args.top_m]
+    for p in methods:
+        p.tier = "M"
+    if methods:
+        log(f"  其中 {len(methods)} 篇是统计/研究方法文献, 单独放进 {TIER_DIRS['M']}, 不占主题论文的名额")
 
     # 种子本身永远是 S 级, 排在最前面.
-    final = seeds + ranked
+    final = seeds + topical + methods
 
     out.mkdir(parents=True, exist_ok=True)
     for _, name in TIERS:
@@ -1898,10 +1987,18 @@ def cmd_discover(args: argparse.Namespace) -> int:
             if p.is_seed and args.have_seeds:
                 skipped += 1
                 continue
-            if not p.pdf_urls:
+            dest = out / TIER_DIRS[p.tier] / f"{p.slug()}.pdf"
+            # 上次下在别的分级文件夹里了 (分级变了): 挪过来, 不重新下载.
+            if not dest.exists():
+                for _, name in TIERS:
+                    old = out / name / dest.name
+                    if old != dest and old.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        old.replace(dest)
+                        break
+            if not dest.exists() and not p.pdf_urls:
                 closed += 1
                 continue
-            dest = out / TIER_DIRS[p.tier] / f"{p.slug()}.pdf"
             if dest.exists():
                 p.pdf_path = str(dest.resolve())
                 ok += 1
@@ -1940,24 +2037,43 @@ def cmd_discover(args: argparse.Namespace) -> int:
     seed_titles = {s.oid: f"[[{s.slug()}]]" for s in seeds}
     if vault:
         notes_root = vault / "10-文献笔记"
-        n = kept = 0
+        elsewhere: dict[str, list[Path]] = {}
+        for _, name in TIERS:
+            d = notes_root / name
+            if d.is_dir():
+                for f in d.glob("*.md"):
+                    elsewhere.setdefault(f.name, []).append(f)
+        n = kept = moved = 0
+        wanted: set[str] = set()
         for p in final:
             folder = notes_root / TIER_DIRS[p.tier]
             folder.mkdir(parents=True, exist_ok=True)
             target = folder / f"{p.slug()}.md"
+            wanted.add(target.name)
             if target.exists() and not args.force:
                 kept += 1
                 continue
+            old = next((f for f in elsewhere.get(target.name, [])
+                        if f != target and f.exists()), None)
+            if old and not args.force:
+                # 分级变了: 挪到新文件夹, 只改 frontmatter 里的分级, 你写的内容一字不动.
+                old.replace(target)
+                retier_note(target, p)
+                moved += 1
+                continue
             target.write_text(render_note(p, seed_titles), encoding="utf-8")
             n += 1
-        why = "(你可能已经在上面写了东西; 要重建加 --force)"
-        if n and kept:
-            msg = f"新写入 {n} 篇 Obsidian 文献笔记, {kept} 篇已存在没动 {why}"
-        elif kept:
-            msg = f"{kept} 篇 Obsidian 文献笔记已存在, 都没动 {why}"
-        else:
-            msg = f"写入 {n} 篇 Obsidian 文献笔记"
-        log(f"  ✓ {msg} → {notes_root}")
+        orphans = [x for x in elsewhere if x not in wanted]
+        parts = []
+        if n:
+            parts.append(f"新写入 {n} 篇")
+        if moved:
+            parts.append(f"{moved} 篇换了分级, 已挪到新文件夹 (你写的内容都在)")
+        if kept:
+            parts.append(f"{kept} 篇已存在没动")
+        log(f"  ✓ Obsidian 文献笔记: {', '.join(parts) or '无'} → {notes_root}")
+        if orphans:
+            log(f"  · {len(orphans)} 篇旧笔记不在这次的结果里, 留着没删")
 
         # 没跑过 setup 的库没有这个目录; 前面的活都干完了, 不能在最后一步崩掉.
         (vault / "30-论文地图").mkdir(parents=True, exist_ok=True)
@@ -2073,6 +2189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--max", type=int, default=60, help="最多保留多少篇 (默认 60)")
     d.add_argument("--top-s", type=int, default=12, help="S 级篇数 (默认 12)")
     d.add_argument("--top-a", type=int, default=20, help="A 级篇数 (默认 20)")
+    d.add_argument("--top-m", type=int, default=15, help="M 级 (研究方法文献) 最多几篇 (默认 15)")
     d.add_argument("--citers-per-seed", type=int, default=None,
                    help="每篇种子最多回溯多少引用它的文献 (默认 150, 种子多时自动减少)")
     d.add_argument("--min-year", type=int, help="只要这一年之后的")
