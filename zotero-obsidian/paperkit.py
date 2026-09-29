@@ -1205,6 +1205,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         if obsidian_running():
             failures.append("Obsidian 还开着, 跳过了插件安装. 关掉 Obsidian 后再跑一次本命令.")
         else:
+            log("→ 从 GitHub 下载 Obsidian 插件 …")
             try:
                 registry = load_plugin_registry()
             except Exception as exc:
@@ -1240,6 +1241,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         else:
             if not profiles:
                 todo.append("先装 Zotero 7: https://www.zotero.org/download/")
+            log("→ 正在从 GitHub 下载 Better BibTeX 安装包, 网速慢时要一两分钟 …")
+            log("  (等太久可以 Ctrl+C, 改用浏览器下载, 装好后重跑本命令会自动跳过这步)")
             try:
                 xpi = download_bbt(downloads_dir())
                 log(f"✓ 已下载 Better BibTeX: {xpi}")

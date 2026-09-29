@@ -940,3 +940,30 @@ class TestVaultDiscoveryFallback(unittest.TestCase):
             roots = pk.vault_search_roots()
         self.assertIn(Path("D:/"), roots)
         self.assertNotIn(Path("C:/"), roots)   # C 盘根太大, 只搜用户目录
+
+
+class TestInstallTellsWhatItIsWaitingOn(unittest.TestCase):
+    def test_announces_bbt_download_before_starting_it(self):
+        # 真实用户在这里以为卡死了: 下载前没有任何输出.
+        import io
+        from unittest import mock
+        buf = io.StringIO()
+        seen_before_download = []
+
+        def slow_download(dest, get=None):
+            seen_before_download.append(buf.getvalue())
+            return dest / "zotero-better-bibtex-9.0.64.xpi"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "V"; vault.mkdir()
+            (root / "prof" / "extensions").mkdir(parents=True)
+            with mock.patch.object(pk.sys, "stderr", buf), \
+                 mock.patch.object(pk, "zotero_profile_dirs", lambda: [root / "prof"]), \
+                 mock.patch.object(pk, "downloads_dir", lambda: root / "dl"), \
+                 mock.patch.object(pk, "bbt_live", lambda: False), \
+                 mock.patch.object(pk, "download_bbt", slow_download), \
+                 mock.patch.object(pk.Path, "cwd", lambda: root):
+                pk.main(["install", "--vault", str(vault), "--skip-plugins"])
+        self.assertIn("Better BibTeX", seen_before_download[0].rsplit("✓ 库结构就绪", 1)[-1])
+        self.assertIn("Ctrl+C", seen_before_download[0])
