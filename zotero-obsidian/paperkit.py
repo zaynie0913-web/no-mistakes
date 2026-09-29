@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import os
@@ -25,6 +26,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -1350,6 +1353,355 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# seeds: 从已经下载的 PDF 生成种子清单
+# --------------------------------------------------------------------------
+
+PDF_DOI_RE = re.compile(rb"10\.\d{4,9}/[^\s\"'<>\[\]{}]+")
+META_DOI_RE = re.compile(
+    rb"(?:prism:doi|pdfx:doi|crossmark:doi|dc:identifier|/doi)"
+    rb"(?:\s*=\s*[\"']"        # 属性写法: crossmark:DOI="..."
+    rb"|(?:\s+[^<>]*)?>"          # 元素写法, 标签里可能还带 xmlns 等属性
+    rb"|\s*\()"                  # PDF Info 字典: /doi (...)
+    rb"\s*(?:doi:\s*|https?://(?:dx\.)?doi\.org/)?"
+    rb"(10\.\d{4,9}/[^\s\"'<>\[\]{}]+)",
+    re.I,
+)
+# arXiv 页边水印: "arXiv:1706.03762v5 [cs.CL] 6 Dec 2017". 要求带版本号和分类,
+# 这样参考文献里引用的 "arXiv:xxxx.xxxxx" 不会被当成本篇.
+ARXIV_MARK_RE = re.compile(rb"arXiv:(\d{4}\.\d{4,5})v\d+\s*\[[A-Za-z\-]+(?:\.[A-Za-z\-]+)?\]")
+ARXIV_NAME_RE = re.compile(r"^(\d{4}\.\d{4,5})(?:v\d+)?\b")
+STREAM_RE = re.compile(rb"stream\r?\n")
+
+
+def _clean_doi(raw: bytes) -> str | None:
+    s = raw.decode("latin-1").replace("\\", "")
+    # 在第一个不配对的右括号处截断: "(https://doi.org/10.1/x)Tj" 这类
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                s = s[:i]
+                break
+    s = s.rstrip(".,;:")
+    for suffix in ("/abstract", "/full", "/epdf", "/pdf", ".pdf"):
+        if s.lower().endswith(suffix):
+            s = s[: -len(suffix)]
+    return s.lower() if re.fullmatch(r"10\.\d{4,9}/\S+", s) else None
+
+
+def _pdf_blobs(data: bytes, cap: int = 40_000_000) -> Iterator[bytes]:
+    """原始字节, 以及每个能 Flate 解压的流. 限量, 大扫描件也不会吃光内存."""
+    yield data
+    total, pos = 0, 0
+    while True:
+        m = STREAM_RE.search(data, pos)
+        if not m:
+            return
+        start = m.end()
+        end = data.find(b"endstream", start)
+        if end < 0:
+            return
+        pos = end + len(b"endstream")
+        try:
+            out = zlib.decompressobj().decompress(data[start:end], 5_000_000)
+        except zlib.error:
+            continue
+        if out:
+            total += len(out)
+            yield out
+            if total > cap:
+                return
+
+
+def _decode_pdf_bytes(b: bytes) -> str:
+    if b.startswith(b"\xfe\xff"):
+        return b[2:].decode("utf-16-be", errors="replace")
+    if b.startswith(b"\xef\xbb\xbf"):
+        b = b[3:]
+    try:
+        return b.decode("utf-8")
+    except UnicodeDecodeError:
+        return b.decode("latin-1")
+
+
+def _read_pdf_string(data: bytes, i: int) -> str | None:
+    """从 data[i] 读一个 PDF 字符串: (字面量, 支持嵌套括号和转义) 或 <十六进制>."""
+    while i < len(data) and data[i:i + 1].isspace():
+        i += 1
+    if data[i:i + 1] == b"<":
+        end = data.find(b">", i)
+        if end < 0:
+            return None
+        hexs = re.sub(rb"\s", b"", data[i + 1:end])
+        if len(hexs) % 2:
+            hexs += b"0"
+        try:
+            return _decode_pdf_bytes(bytes.fromhex(hexs.decode("ascii")))
+        except ValueError:
+            return None
+    if data[i:i + 1] != b"(":
+        return None
+    out = bytearray()
+    depth, j = 1, i + 1
+    escapes = {ord("n"): 10, ord("r"): 13, ord("t"): 9, ord("b"): 8, ord("f"): 12}
+    while j < len(data) and depth:
+        c = data[j]
+        if c == 0x5C:  # 反斜杠
+            j += 1
+            if j >= len(data):
+                break
+            e = data[j]
+            if e in escapes:
+                out.append(escapes[e])
+            elif 0x30 <= e <= 0x37:
+                k = j
+                while k < min(j + 3, len(data)) and 0x30 <= data[k] <= 0x37:
+                    k += 1
+                out.append(int(data[j:k], 8) & 0xFF)
+                j = k - 1
+            elif e in (10, 13):
+                pass  # 续行
+            else:
+                out.append(e)
+        elif c == 0x28:
+            depth += 1
+            out.append(c)
+        elif c == 0x29:
+            depth -= 1
+            if depth:
+                out.append(c)
+        else:
+            out.append(c)
+        j += 1
+    return _decode_pdf_bytes(bytes(out))
+
+
+def _useful_title(t: str | None) -> bool:
+    if not t:
+        return False
+    t = t.strip()
+    has_cjk = re.search(r"[一-鿿]{4,}", t)
+    if len(t) < 8 and not has_cjk:
+        return False
+    low = t.lower()
+    if any(j in low for j in ("microsoft word", "untitled", ".doc", ".pdf", ".tex",
+                              "powerpoint", "slide 1")):
+        return False
+    if re.match(r"1-s2\.0-", t) or re.fullmatch(r"[\d\W_]+", t):
+        return False
+    if re.fullmatch(r"[\w\-]+\.\w{2,4}", t) and not has_cjk:
+        return False
+    # 英文标题不会只有一个词: main / manuscript / xmp-paper 这类是文件名不是标题.
+    if not has_cjk and " " not in t:
+        return False
+    # 每个词都是文件名惯用词 ("paper final", "manuscript v2") 的也不是标题.
+    # 不能简单要求至少三个词: Nature 那篇著名综述就叫 "Deep learning".
+    words = re.findall(r"[a-z]+|\d+", low)
+    if words and all(w in FILENAME_WORDS or w.isdigit() for w in words):
+        return False
+    return True
+
+
+FILENAME_WORDS = {
+    "paper", "final", "draft", "manuscript", "main", "full", "text", "article",
+    "preprint", "revised", "revision", "submission", "submitted", "camera", "ready",
+    "accepted", "version", "v", "copy", "new", "old", "fulltext", "download", "file",
+    "document", "doc", "pdf", "the", "of", "and",
+}
+
+
+def _title_from_filename(path: Path) -> str | None:
+    s = path.stem
+    s = re.sub(r"\s*\(\d+\)$", "", s)            # 重复下载: xxx (1)
+    s = re.sub(r"\s*-\s*副本(\s*\(\d+\))?$", "", s)
+    if re.search(r"[一-鿿]", s) and "_" in s:
+        head, tail = s.rsplit("_", 1)
+        if len(tail) <= 6:                        # 知网命名: 标题_第一作者
+            s = head
+    s = s.replace("_", " ")
+    if " " not in s and s.count("-") >= 2:        # slug 写法: graph-attention-networks
+        s = s.replace("-", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if _useful_title(s) else None
+
+
+def pdf_identifiers(path: Path) -> dict:
+    """认出一篇 PDF 自己是谁. 顺序:
+    元数据里的 DOI > 正文反复出现的 DOI (期刊页眉页脚) > arXiv 编号 >
+    全文唯一的 DOI > PDF 标题 > 文件名.
+
+    参考文献里有几十个别人的 DOI, 每个只出现一次; 所以"很多个、各出现一次"
+    时宁可退回标题, 也不挑一个可能是引用文献的 DOI.
+    """
+    res = {"doi": None, "arxiv": None, "title": None, "how": "认不出"}
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(80_000_000)
+    except OSError:
+        data = b""
+
+    meta_doi = None
+    counts: Counter = Counter()
+    arxiv = None
+    title = None
+    for blob in _pdf_blobs(data):
+        if not meta_doi:
+            m = META_DOI_RE.search(blob)
+            if m:
+                meta_doi = _clean_doi(m.group(1))
+        for raw in PDF_DOI_RE.findall(blob):
+            d = _clean_doi(raw)
+            if d:
+                counts[d] += 1
+        if not arxiv:
+            m = ARXIV_MARK_RE.search(blob)
+            if m:
+                arxiv = m.group(1).decode()
+        if title is None:
+            k = blob.find(b"/Title")
+            while k >= 0 and title is None:
+                t = _read_pdf_string(blob, k + len(b"/Title"))
+                if _useful_title(t):
+                    title = re.sub(r"\s+", " ", t).strip()
+                k = blob.find(b"/Title", k + 1)
+        if title is None:
+            m = re.search(rb"<dc:title>\s*<rdf:Alt>\s*<rdf:li[^>]*>(.*?)</rdf:li>", blob, re.S)
+            if m:
+                t = html.unescape(m.group(1).decode("utf-8", errors="replace"))
+                if _useful_title(t):
+                    title = re.sub(r"\s+", " ", t).strip()
+
+    name_arxiv = ARXIV_NAME_RE.match(path.stem)
+    arxiv = arxiv or (name_arxiv.group(1) if name_arxiv else None)
+    top = counts.most_common(2)
+
+    if meta_doi:
+        res.update(doi=meta_doi, how="元数据 DOI")
+    elif top and top[0][1] >= 2 and (len(top) == 1 or top[0][1] > top[1][1]):
+        res.update(doi=top[0][0], how="正文反复出现的 DOI")
+    elif arxiv:
+        res.update(arxiv=arxiv, how="arXiv 编号")
+    elif len(counts) == 1:
+        res.update(doi=top[0][0], how="全文唯一的 DOI")
+    elif title:
+        res.update(title=title, how="PDF 标题")
+    else:
+        t = _title_from_filename(path)
+        if t:
+            res.update(title=t, how="文件名")
+    return res
+
+
+def seed_line(ids: dict, path: Path) -> str | None:
+    key = ids.get("doi") or (f"arXiv:{ids['arxiv']}" if ids.get("arxiv") else None) or ids.get("title")
+    if not key:
+        return None
+    return f"{key}  # {path.name} ({ids['how']})"
+
+
+def cmd_seeds(args: argparse.Namespace) -> int:
+    src = Path(args.from_pdfs).expanduser()
+    if not src.is_dir():
+        log(f"× 文件夹不存在: {src}")
+        return 1
+    pdfs = sorted(p for p in src.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf")
+    if not pdfs:
+        log(f"× {src} 里没有 PDF")
+        return 1
+
+    out = Path(args.out).expanduser()
+    have = {x.lower() for x in (read_seeds(out) if out.exists() else [])}
+    lines: list[str] = []
+    how_count: Counter = Counter()
+    unknown: list[Path] = []
+    log(f"→ 扫描 {len(pdfs)} 篇 PDF …")
+    for p in pdfs:
+        rel = p.relative_to(src)
+        ids = pdf_identifiers(p)
+        line = seed_line(ids, p)
+        if not line:
+            unknown.append(rel)
+            log(f"  ? {rel}: 认不出, 跳过")
+            continue
+        key = line.split("  # ", 1)[0]
+        if key.lower() in have:
+            log(f"  = {rel}: 已在清单里")
+            continue
+        have.add(key.lower())
+        lines.append(line)
+        how_count[ids["how"]] += 1
+        log(f"  ✓ {rel}: {ids['how']} → {key[:70]}")
+
+    if lines:
+        head = "" if out.exists() else "# 种子论文清单 —— 一行一篇, 井号后面是注释\n"
+        body = out.read_text(encoding="utf-8-sig") if out.exists() else ""
+        if body and not body.endswith("\n"):
+            body += "\n"
+        stamp = time.strftime("%Y-%m-%d")
+        out.write_text(
+            head + body + f"\n# 来自 {src} ({stamp})\n" + "\n".join(lines) + "\n",
+            encoding="utf-8",
+        )
+
+    log("")
+    log(f"新增 {len(lines)} 条种子 → {out}")
+    for how, n in how_count.most_common():
+        log(f"  {how}: {n}")
+    if unknown:
+        log(f"  认不出: {len(unknown)} 篇 (扫描版或文件名是一串编号, 可以手动把标题写进清单)")
+    if how_count.get("PDF 标题") or how_count.get("文件名"):
+        log("按标题认的不一定准, discover 时看一眼每条种子匹配到的论文对不对.")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# config: 记住邮箱等设置 (存在 paperkit.py 旁边, 只在你电脑上)
+# --------------------------------------------------------------------------
+
+CONFIG_PATH = Path(__file__).resolve().parent / "paperkit.json"
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def load_config() -> dict:
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def resolve_mailto(flag: str | None) -> str | None:
+    return flag or os.environ.get("PAPERKIT_MAILTO") or load_config().get("mailto")
+
+
+def citers_budget(explicit: int | None, n_seeds: int) -> int:
+    """每篇种子回溯多少引用它的文献. 种子一多, 总量要控制住, 不然候选集爆炸."""
+    if explicit is not None:
+        return explicit
+    return 150 if n_seeds <= 10 else max(30, 1500 // n_seeds)
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    cfg = load_config()
+    if args.mailto:
+        m = args.mailto.strip()
+        if not EMAIL_RE.fullmatch(m):
+            log(f"× 这不像邮箱: {m}")
+            return 1
+        user, domain = m.rsplit("@", 1)
+        cfg["mailto"] = f"{user}@{domain.lower()}"
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        log(f"✓ 记住了邮箱 {cfg['mailto']}")
+        log(f"  存在 {CONFIG_PATH}, 只在你电脑上, 以后 discover 自动用它")
+        return 0
+    log(json.dumps(cfg, ensure_ascii=False, indent=2) if cfg else "(还没有任何设置)")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # discover: 主流程
 # --------------------------------------------------------------------------
 
@@ -1357,7 +1709,16 @@ def cmd_install(args: argparse.Namespace) -> int:
 def read_seeds(path: Path) -> list[str]:
     # utf-8-sig: 老版 Windows 记事本存的 UTF-8 带 BOM, 不剥掉第一行就解析失败.
     raw = path.read_text(encoding="utf-8-sig").splitlines()
-    return [ln for ln in (l.strip() for l in raw) if ln and not ln.startswith("#")]
+    out = []
+    for line in raw:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # 行内注释要求 # 前后都有空白, 这样 "C# in Depth" 这种标题不受影响.
+        line = re.sub(r"\s+#\s.*$", "", line).strip()
+        if line:
+            out.append(line)
+    return out
 
 
 def cmd_discover(args: argparse.Namespace) -> int:
@@ -1372,9 +1733,10 @@ def cmd_discover(args: argparse.Namespace) -> int:
         log(f"× 库目录不存在: {vault}")
         return 1
 
-    client = Client(mailto=args.mailto)
-    if not args.mailto:
-        log("! 没给 --mailto, 按 1 请求/秒 跑. 填个邮箱能进 OpenAlex 礼貌池, 快 10 倍.")
+    mailto = resolve_mailto(args.mailto)
+    client = Client(mailto=mailto)
+    if not mailto:
+        log("! 没设邮箱, 按 1 请求/秒 跑. 跑一次 paperkit.py config --mailto 你的邮箱, 以后都快 10 倍.")
 
     lines = read_seeds(seeds_path)
     if not lines:
@@ -1396,7 +1758,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
         return 1
 
     log(f"→ 围绕 {len(seeds)} 篇种子展开关联检索 …")
-    candidates = expand(client, seeds, args.citers_per_seed)
+    candidates = expand(client, seeds, citers_budget(args.citers_per_seed, len(seeds)))
     log(f"  得到 {len(candidates)} 篇候选")
 
     this_year = time.gmtime().tm_year
@@ -1419,7 +1781,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
         log("→ 下载开放获取 PDF …")
         ok = 0
         for p in final:
-            if not p.pdf_url:
+            if not p.pdf_url or (p.is_seed and args.have_seeds):
                 continue
             dest = out / TIER_DIRS[p.tier] / f"{p.slug()}.pdf"
             if dest.exists():
@@ -1435,7 +1797,7 @@ def cmd_discover(args: argparse.Namespace) -> int:
 
     # 每级一个 RIS: Zotero 里 "导入到新分类" 会拿文件名当分类名, 分级就自动建好了.
     for tier, name in TIERS:
-        group = [p for p in final if p.tier == tier]
+        group = [p for p in final if p.tier == tier and not (p.is_seed and args.have_seeds)]
         if not group:
             continue
         (out / f"{name}.ris").write_text(
@@ -1568,10 +1930,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--max", type=int, default=60, help="最多保留多少篇 (默认 60)")
     d.add_argument("--top-s", type=int, default=12, help="S 级篇数 (默认 12)")
     d.add_argument("--top-a", type=int, default=20, help="A 级篇数 (默认 20)")
-    d.add_argument("--citers-per-seed", type=int, default=150,
-                   help="每篇种子最多回溯多少引用它的文献 (默认 150)")
+    d.add_argument("--citers-per-seed", type=int, default=None,
+                   help="每篇种子最多回溯多少引用它的文献 (默认 150, 种子多时自动减少)")
     d.add_argument("--min-year", type=int, help="只要这一年之后的")
     d.add_argument("--no-pdf", action="store_true", help="只出元数据, 不下载 PDF")
+    d.add_argument("--have-seeds", action="store_true",
+                   help="种子论文我已经有了: 不下载它们的 PDF, 也不写进 RIS, 免得 Zotero 里重复")
     d.add_argument("--force", action="store_true", help="覆盖已存在的笔记")
     d.set_defaults(func=cmd_discover)
 
@@ -1580,6 +1944,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     i.add_argument("--skip-plugins", action="store_true", help="不装 Obsidian 插件")
     i.add_argument("--skip-zotero", action="store_true", help="不管 Zotero 那边")
     i.set_defaults(func=cmd_install)
+
+    sd = sub.add_parser("seeds", help="从已经下载的 PDF 生成种子清单")
+    sd.add_argument("--from-pdfs", required=True, help="PDF 所在文件夹 (含子文件夹)")
+    sd.add_argument("--out", default="seeds.txt", help="写到哪个清单, 已存在就追加 (默认 seeds.txt)")
+    sd.set_defaults(func=cmd_seeds)
+
+    c = sub.add_parser("config", help="记住邮箱等设置")
+    c.add_argument("--mailto", help="你的邮箱, 用于 OpenAlex 礼貌池")
+    c.set_defaults(func=cmd_config)
 
     k = sub.add_parser("doctor", help="体检: 检查插件/模板/Zotero 连接是否到位")
     k.add_argument("--vault", required=True)

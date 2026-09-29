@@ -1040,3 +1040,283 @@ class TestWindowsKnownFolders(unittest.TestCase):
     def test_missing_zotero_hint_names_a_supported_version(self):
         # 最新 Better BibTeX 要求 Zotero >= 8.0.1, 让人去装 Zotero 7 是错的.
         self.assertNotIn("Zotero 7", pk.cmd_install.__code__.co_consts.__repr__())
+
+
+# --------------------------------------------------------------------------
+# 从已下载的 PDF 生成种子
+# --------------------------------------------------------------------------
+
+import zlib
+
+
+def make_pdf(path, *, info=b"", xmp=b"", streams=(), raw=b""):
+    """造一个足够像的 PDF: 可选 Info 字典、XMP、Flate 压缩的内容流."""
+    parts = [b"%PDF-1.7\n"]
+    for i, content in enumerate(streams, 1):
+        comp = zlib.compress(content)
+        parts.append(b"%d 0 obj\n<< /Length %d /Filter /FlateDecode >>\nstream\n"
+                     % (i, len(comp)) + comp + b"\nendstream\nendobj\n")
+    if xmp:
+        parts.append(b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>" + xmp + b"</x:xmpmeta>\n")
+    if info:
+        parts.append(b"99 0 obj\n<< " + info + b" >>\nendobj\n")
+    parts.append(raw)
+    parts.append(b"%%EOF\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(parts))
+    return path
+
+
+REFS = b"".join(b"[%d] Some ref. doi:10.1000/ref%d\n" % (i, i) for i in range(30))
+
+
+class TestPdfIdentifiers(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_xmp_doi_beats_the_reference_list(self):
+        p = make_pdf(self.dir / "a.pdf", xmp=b"<prism:doi>10.1016/j.cell.2020.01.001</prism:doi>",
+                     streams=[REFS])
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["doi"], "10.1016/j.cell.2020.01.001")
+        self.assertEqual(got["how"], "元数据 DOI")
+
+    def test_xmp_attribute_form_and_doi_url_prefix(self):
+        p = make_pdf(self.dir / "b.pdf",
+                     xmp=b'<rdf:Description crossmark:DOI="https://doi.org/10.1038/S41586-021-03819-2"/>')
+        self.assertEqual(pk.pdf_identifiers(p)["doi"], "10.1038/s41586-021-03819-2")
+
+    def test_doi_repeated_in_page_headers_beats_singletons(self):
+        page = b"BT (https://doi.org/10.1109/TPAMI.2019.2913372) Tj ET\n"
+        p = make_pdf(self.dir / "c.pdf", streams=[page * 8, REFS])
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["doi"], "10.1109/tpami.2019.2913372")
+        self.assertEqual(got["how"], "正文反复出现的 DOI")
+
+    def test_single_distinct_doi_is_taken(self):
+        p = make_pdf(self.dir / "d.pdf", raw=b"/URI (https://doi.org/10.1145/3290605.3300233.)")
+        self.assertEqual(pk.pdf_identifiers(p)["doi"], "10.1145/3290605.3300233")
+
+    def test_many_singleton_dois_are_ambiguous_so_title_is_used(self):
+        p = make_pdf(self.dir / "e.pdf", streams=[REFS],
+                     info=b"/Title (Deep Residual Learning for Image Recognition)")
+        got = pk.pdf_identifiers(p)
+        self.assertIsNone(got["doi"])
+        self.assertEqual(got["title"], "Deep Residual Learning for Image Recognition")
+        self.assertEqual(got["how"], "PDF 标题")
+
+    def test_utf16_hex_title_decodes_chinese(self):
+        title = "基于深度学习的图像分割方法研究"
+        hexed = ("FEFF" + title.encode("utf-16-be").hex()).encode()
+        p = make_pdf(self.dir / "f.pdf", info=b"/Title <" + hexed + b">")
+        self.assertEqual(pk.pdf_identifiers(p)["title"], title)
+
+    def test_literal_title_with_escapes(self):
+        p = make_pdf(self.dir / "g.pdf", info=rb"/Title (Attention \(Is\) All You Need\\Really)")
+        self.assertEqual(pk.pdf_identifiers(p)["title"], r"Attention (Is) All You Need\Really")
+
+    def test_junk_word_title_falls_back_to_filename(self):
+        p = make_pdf(self.dir / "Graph Neural Networks A Review.pdf",
+                     info=b"/Title (Microsoft Word - draft_v3.docx)")
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["title"], "Graph Neural Networks A Review")
+        self.assertEqual(got["how"], "文件名")
+
+    def test_cnki_style_filename_drops_trailing_author(self):
+        p = make_pdf(self.dir / "基于深度学习的图像分割研究_张三.pdf")
+        self.assertEqual(pk.pdf_identifiers(p)["title"], "基于深度学习的图像分割研究")
+
+    def test_duplicate_download_suffix_is_dropped(self):
+        p = make_pdf(self.dir / "Graph Attention Networks (1).pdf")
+        self.assertEqual(pk.pdf_identifiers(p)["title"], "Graph Attention Networks")
+
+    def test_arxiv_filename(self):
+        p = make_pdf(self.dir / "2103.00020v2.pdf")
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["arxiv"], "2103.00020")
+        self.assertEqual(got["how"], "arXiv 编号")
+
+    def test_arxiv_watermark_in_text(self):
+        p = make_pdf(self.dir / "paper.pdf", streams=[b"(arXiv:1706.03762v5  [cs.CL]  6 Dec 2017) Tj"])
+        self.assertEqual(pk.pdf_identifiers(p)["arxiv"], "1706.03762")
+
+    def test_garbage_file_does_not_crash(self):
+        p = self.dir / "Some Paper Title Here.pdf"
+        p.write_bytes(b"\x00\xff not a pdf at all stream\n\x78\x9c garbage endstream")
+        got = pk.pdf_identifiers(p)
+        self.assertEqual(got["title"], "Some Paper Title Here")
+
+    def test_seed_line_carries_the_source_as_inline_comment(self):
+        p = make_pdf(self.dir / "x.pdf", xmp=b"<prism:doi>10.1000/abc</prism:doi>")
+        line = pk.seed_line(pk.pdf_identifiers(p), p)
+        self.assertTrue(line.startswith("10.1000/abc"))
+        self.assertIn("# x.pdf", line)
+
+
+class TestInlineSeedComments(unittest.TestCase):
+    def test_inline_comment_is_stripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "s.txt"
+            f.write_text("10.1000/abc  # a.pdf (元数据 DOI)\n"
+                         "Graph Attention Networks  # b.pdf (文件名)\n"
+                         "C# in Depth\n", encoding="utf-8")
+            self.assertEqual(pk.read_seeds(f),
+                             ["10.1000/abc", "Graph Attention Networks", "C# in Depth"])
+
+
+class TestSeedsCommand(unittest.TestCase):
+    def test_scans_folder_recursively_and_appends_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lib = root / "毕业论文" / "01_文献" / "原始PDF"
+            make_pdf(lib / "a.pdf", xmp=b"<prism:doi>10.1000/aaa</prism:doi>")
+            make_pdf(lib / "子文件夹" / "b.pdf", xmp=b"<prism:doi>10.1000/bbb</prism:doi>")
+            make_pdf(lib / "c.PDF", xmp=b"<prism:doi>10.1000/aaa</prism:doi>")   # 同一篇下了两次
+            (lib / "notes.docx").write_bytes(b"x")
+            seeds = root / "seeds.txt"
+            seeds.write_text("# 我的注释\n10.9/mine\n", encoding="utf-8")
+
+            rc = pk.main(["seeds", "--from-pdfs", str(lib), "--out", str(seeds)])
+            self.assertEqual(rc, 0)
+            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa", "10.1000/bbb"])
+
+            pk.main(["seeds", "--from-pdfs", str(lib), "--out", str(seeds)])  # 再跑一次
+            self.assertEqual(pk.read_seeds(seeds), ["10.9/mine", "10.1000/aaa", "10.1000/bbb"])
+            self.assertIn("# 我的注释", seeds.read_text(encoding="utf-8"))
+
+    def test_missing_folder_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = pk.main(["seeds", "--from-pdfs", str(Path(tmp) / "没有"),
+                          "--out", str(Path(tmp) / "s.txt")])
+            self.assertEqual(rc, 1)
+
+    def test_folder_without_pdfs_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = pk.main(["seeds", "--from-pdfs", tmp, "--out", str(Path(tmp) / "s.txt")])
+            self.assertEqual(rc, 1)
+
+
+class TestConfigRemembersMailto(unittest.TestCase):
+    def test_config_saves_mailto_and_discover_uses_it(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "paperkit.json"
+            with mock.patch.object(pk, "CONFIG_PATH", cfg):
+                self.assertEqual(pk.main(["config", "--mailto", "Someone@Example.COM"]), 0)
+                self.assertEqual(json.loads(cfg.read_text(encoding="utf-8"))["mailto"],
+                                 "Someone@example.com")   # 域名不分大小写, 用户名保留
+
+                seen = {}
+                def fake_client(mailto=None, **kw):
+                    seen["mailto"] = mailto
+                    return FakeClient()
+                seeds = root / "s.txt"
+                seeds.write_text("10.1000/seed1\n", encoding="utf-8")
+                with mock.patch.object(pk, "Client", fake_client), \
+                     mock.patch.dict(pk.os.environ, {}, clear=False):
+                    pk.os.environ.pop("PAPERKIT_MAILTO", None)
+                    pk.main(["discover", "--seeds", str(seeds), "--out", str(root / "o"), "--no-pdf"])
+                self.assertEqual(seen["mailto"], "Someone@example.com")
+
+    def test_explicit_flag_beats_saved_config(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "paperkit.json"
+            cfg.write_text(json.dumps({"mailto": "saved@example.com"}), encoding="utf-8")
+            with mock.patch.object(pk, "CONFIG_PATH", cfg):
+                self.assertEqual(pk.resolve_mailto("flag@example.com"), "flag@example.com")
+                self.assertEqual(pk.resolve_mailto(None), "saved@example.com")
+
+    def test_rejects_something_that_is_not_an_email(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(pk, "CONFIG_PATH", Path(tmp) / "c.json"):
+                self.assertEqual(pk.main(["config", "--mailto", "not-an-email"]), 1)
+
+
+class TestManySeedsScaleDownCiters(unittest.TestCase):
+    def test_citers_per_seed_shrinks_with_many_seeds(self):
+        self.assertEqual(pk.citers_budget(None, 5), 150)
+        self.assertEqual(pk.citers_budget(None, 20), 75)
+        self.assertEqual(pk.citers_budget(None, 200), 30)
+        self.assertEqual(pk.citers_budget(40, 200), 40)   # 显式指定的不改
+
+
+class TestPdfIdentifiersFromRealWriters(unittest.TestCase):
+    """用真实 PDF 库 (fpdf2 + pikepdf) 生成的文件暴露出来的问题."""
+
+    def test_xmp_element_with_inline_namespace_declaration(self):
+        # pikepdf 等工具写成 <prism:doi xmlns:prism="...">, 标签名后面还有属性
+        with tempfile.TemporaryDirectory() as tmp:
+            p = make_pdf(Path(tmp) / "x.pdf", streams=[REFS], xmp=(
+                b'<rdf:Description rdf:about=""><prism:doi xmlns:prism='
+                b'"http://prismstandard.org/namespaces/basic/1.0/">10.1038/s41586-021-03819-2'
+                b'</prism:doi></rdf:Description>'))
+            got = pk.pdf_identifiers(p)
+            self.assertEqual(got["doi"], "10.1038/s41586-021-03819-2")
+            self.assertEqual(got["how"], "元数据 DOI")
+
+    def test_single_word_ascii_filename_is_not_a_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("xmp-paper.pdf", "main.pdf", "paper_final.pdf", "manuscript.pdf"):
+                p = make_pdf(Path(tmp) / name, streams=[REFS])
+                self.assertIsNone(pk.pdf_identifiers(p)["title"], name)
+
+    def test_slug_style_filename_becomes_words(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = make_pdf(Path(tmp) / "graph-attention-networks.pdf", streams=[REFS])
+            self.assertEqual(pk.pdf_identifiers(p)["title"], "graph attention networks")
+
+    def test_cjk_title_without_spaces_is_still_a_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = make_pdf(Path(tmp) / "交通流预测方法综述.pdf", streams=[REFS])
+            self.assertEqual(pk.pdf_identifiers(p)["title"], "交通流预测方法综述")
+
+
+class TestShortRealTitles(unittest.TestCase):
+    def test_two_word_real_title_is_kept(self):
+        # LeCun, Bengio & Hinton 2015 的 Nature 综述就叫 "Deep learning"
+        with tempfile.TemporaryDirectory() as tmp:
+            p = make_pdf(Path(tmp) / "x.pdf", streams=[REFS], info=b"/Title (Deep learning)")
+            self.assertEqual(pk.pdf_identifiers(p)["title"], "Deep learning")
+
+
+class TestHaveSeeds(unittest.TestCase):
+    """种子来自自己已下载的 PDF 时: 不重复下载, 也不写进 RIS (免得 Zotero 里重复)."""
+
+    def run_discover(self, extra):
+        from unittest import mock
+        downloaded = []
+        def fake_download(url, dest, timeout=60):
+            downloaded.append(dest.name)
+            return False
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seeds = root / "s.txt"
+            seeds.write_text("10.1000/seed1\n", encoding="utf-8")
+            CORPUS["W1"]["best_oa_location"]["pdf_url"] = "https://example.org/seed1.pdf"
+            try:
+                with mock.patch.object(pk, "Client", lambda **kw: FakeClient()), \
+                     mock.patch.object(pk, "download_pdf", fake_download):
+                    pk.main(["discover", "--seeds", str(seeds), "--out", str(root / "o"), *extra])
+            finally:
+                CORPUS["W1"]["best_oa_location"]["pdf_url"] = None
+            ris = (root / "o" / "S-核心必读.ris").read_text(encoding="utf-8")
+        return downloaded, ris
+
+    def test_default_downloads_and_lists_seeds(self):
+        downloaded, ris = self.run_discover([])
+        self.assertTrue(any("Seed One" in d for d in downloaded))
+        self.assertIn("Seed One on Transformers", ris)
+
+    def test_have_seeds_skips_their_pdfs_and_ris_entries(self):
+        downloaded, ris = self.run_discover(["--have-seeds"])
+        self.assertFalse(any("Seed One" in d for d in downloaded))
+        self.assertNotIn("Seed One on Transformers", ris)
+        self.assertIn("Foundational Work Everyone Cites", ris)   # 关联论文照常

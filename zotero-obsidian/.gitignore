@@ -1,0 +1,5 @@
+# 本地运行产物: 配置里有邮箱, 种子和论文是个人数据, 都不该进公开仓库
+paperkit.json
+seeds.txt
+papers/
+__pycache__/

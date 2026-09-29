@@ -95,6 +95,44 @@ python3 paperkit.py discover \
 
 `--mailto` 强烈建议填：进 OpenAlex 礼貌池后限速从 1 req/s 放宽到 10 req/s。
 
+## 从已经下载的 PDF 出发
+
+手上已经有一批论文（比如毕业论文的文献文件夹），可以直接拿它们当种子：
+
+```powershell
+py -3 paperkit.py seeds --from-pdfs "D:\毕业论文\01_文献\原始PDF"
+py -3 paperkit.py discover --seeds seeds.txt --out papers --vault "你的库路径" --have-seeds
+```
+
+`seeds` 会扫描文件夹（含子文件夹）里的每篇 PDF，认出它自己的 DOI、arXiv 编号或标题，
+追加到 `seeds.txt`，每行后面注明来源文件和认法。认的顺序：
+
+1. PDF 元数据里写明的 DOI
+2. 正文里反复出现的 DOI（期刊一般在每页页眉或页脚印本篇 DOI）
+3. arXiv 页边水印（要求带版本号和分类，参考文献里引用的 arXiv 编号不会被误认）
+4. 全文只有一个 DOI
+5. PDF 元数据里的标题
+6. 文件名（知网的「标题_作者.pdf」会去掉作者；`main.pdf`、`paper_final.pdf` 这类不算）
+
+参考文献里有几十个别人的 DOI，各出现一次。所以当 DOI 很多、分不出哪个是本篇时，
+宁可退回标题，也不挑一个可能是引用文献的 DOI。扫描版 PDF 或文件名是一串编号、
+又没有元数据的，会报「认不出」，可以手动把标题补进清单。
+
+`--have-seeds` 表示种子论文你已经有了：不再下载它们的 PDF，也不写进 `.ris`，
+免得和你拖进 Zotero 的原文件重复。
+
+中文文献要注意：OpenAlex 对中文期刊的收录不全，部分中文种子在 `discover` 时
+可能显示「没找到」。
+
+## 记住邮箱
+
+```powershell
+py -3 paperkit.py config --mailto 你的邮箱
+```
+
+存在 `paperkit.py` 旁边的 `paperkit.json` 里，只在你自己电脑上。之后 `discover`
+自动使用，不用每次加 `--mailto`。优先级：命令行参数 > 环境变量 `PAPERKIT_MAILTO` > 配置文件。
+
 ## 分级是怎么算的
 
 候选集从三个方向采集：种子的**参考文献**（领域基石）、**引用了种子**的文献
@@ -152,7 +190,7 @@ python3 paperkit.py discover \
 python3 -m unittest test_paperkit -v
 ```
 
-67 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
+112 个测试，全部离线，在 Python 3.9 / 3.10 / 3.12 / 3.13 / 3.14 上都跑过：
 
 - **discover**：用按 OpenAlex 官方字段结构伪造的假 API 跑通整条流水线，
   覆盖打分排序、分级、RIS 格式、YAML 注入、重跑幂等、种子解析失败的降级，
@@ -162,4 +200,7 @@ python3 -m unittest test_paperkit -v
   过滤命令和变量
 - **install**：找库、插件下载与版本锁定、启用列表合并、插件配置合并、
   Better BibTeX 检测与下载、网络失败时本地步骤照常完成、Obsidian 开着时拒绝改插件
-- **Windows**：带 BOM 的种子文件、GBK 终端输出、GBK 的 `tasklist` 输出
+- **从 PDF 认论文**：元数据 DOI（含带 xmlns 的 XMP 写法）、页眉页脚反复出现的 DOI、
+  arXiv 水印、UTF-16 中文标题、嵌套括号和转义的字面量标题、知网文件名、垃圾文件不崩；
+  另外用 fpdf2 + pikepdf 生成了元数据压进对象流的真实结构 PDF 做过手工验证
+- **Windows**：带 BOM 的种子文件、GBK 终端输出、GBK 的 `tasklist` 输出、挪到 D 盘的已知文件夹
